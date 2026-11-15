@@ -1,6 +1,6 @@
--- Recipes, from CraftProfit: recorded whenever a profession window or trainer shows them, learned
--- or not, for every character. CraftProfit's recorded recipes are imported at login while it is
--- still installed.
+-- Recipes: recorded whenever a profession window or trainer shows them, learned or not, for
+-- every character. A CraftProfitDB (the retired CraftProfit addon's data) is imported at login if
+-- present: the workbench scenarios seed their recipes that way.
 --   cost    materials at TSM's MatPrice, else the cheaper of market value and min buyout
 --   sells   market value less the 5% AH cut, or the vendor price if that is more; P.Evidence's
 --           safe price instead when confidence in the market value isn't high
@@ -351,7 +351,7 @@ function R.Best(recs)
 end
 
 -- material cost to make one: the cheapest fully priced recorded recipe, known ones first.
--- Public, for other addons (KafStats): -> each (copper), rec; nil with no priced recipe
+-- Public, for other addons (MeioStats): -> each (copper), rec; nil with no priced recipe
 function R.CostEach(itemID)
   local best, bestEach, bestKnown
   for _, rec in ipairs(R.Making(itemID) or {}) do

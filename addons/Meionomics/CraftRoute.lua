@@ -2,18 +2,22 @@
 -- for any crafting profession (recipes, thresholds, reagents from CraftData; recorded data wins).
 --   C.Route.Plan(prof, rank, target, opts) -> plan (see the end of Plan)
 --   opts.resale      count what crafted items sell for (else materials and learning only)
---   opts.unverified  include trainer recipes no trainer visit has confirmed ("~")
+--   opts.unverified  include trainer recipes no trainer visit has confirmed ("~"); the UI
+--                    passes it unless "confirmed only" is set
 -- Points: orange gives skill-ups per craft, yellow/green the chance (grey - rank) /
 -- (grey - yellow). Learning (fee, pattern) is charged once per step. Patterns the Find view
 -- calls "not available" (C.PatternSource none) are left out.
 -- Materials held (bags, bank, mail, alts) go first and cost what they would sell for
 -- (C.Value.HeldCost); the rest the AH price, or crafting them when cheaper (bolts). Mats the
--- AH has too few of (and no vendor sells) cost SHORT_PENALTY more, so recipes whose mats are
--- up win at similar cost.
+-- AH has too few of (and no vendor sells) cost SHORT_PENALTY more, and the second half of
+-- what is listed THIN_PENALTY more (listings climb from the min price), so a route doesn't
+-- plan to buy out the AH.
 -- Outputs recoup what sells here within a week (C.Value.Worth) at the AH; the rest the better
 -- of vendor and disenchant (only with this character's Enchanting high enough).
 -- These depend on how much the route makes and uses, so the plan is solved PASSES times, each
--- with the previous route's quantities, and the cheapest by full costing is kept.
+-- with the previous route's quantities, and the cheapest by full costing is kept. Outputs the
+-- previous route didn't make are valued as if made over their whole usable range: valued as one
+-- sale each, every unused recipe looked profitable and the passes flipped between them.
 local _, M = ...
 local R, P, C = M.Recipes, M.Prices, M.Craft
 local V = C.Value
@@ -22,11 +26,13 @@ C.Route = Route
 
 local CAP_STEP = 75
 local SHORT_PENALTY = 1.5
+local THIN_PENALTY = 1.25
 local PASSES = 3
 local STUCK_STEP = 5
--- a craft that pays for itself still costs time: the floor per craft, so the route never
--- grinds near-grey crafts for their resale (that is the Profit view's job)
-local CRAFT_EFFORT = 100
+-- a craft that pays for itself still costs time (crafting, posting, waiting for sales): the
+-- floor per craft, so the route never grinds near-grey crafts for their resale (that is the
+-- Profit view's job). At 1s it planned 129 green Black Silk Packs for 39 points.
+local CRAFT_EFFORT = 3000
 
 ------------------------------------------------------------------------------ Market
 -- what the AH has up: { qty, age, from } (P.SellRate: own scan, else TSM's count); nil unknown
@@ -75,7 +81,9 @@ local function Candidates(prof, opts, skipped)
         c.held = true
       else
         local src = C.PatternSource(item)
-        local price = src.how ~= "none" and (src.price or C.PatternPrice(item))
+        -- "unknown": no scan or TSM count says it is ever up; planning on it misleads
+        local price = src.how ~= "none" and src.how ~= "unknown"
+          and (src.price or C.PatternPrice(item))
         if not price then
           skipped.noSource = skipped.noSource + 1
           return
@@ -111,7 +119,7 @@ end
 
 -- one pass's unit prices: mats by the previous route's use of stock and listings, outputs by
 -- how many of them it made
-local function Pricer(use, made, opts)
+local function Pricer(use, made, guess, opts)
   local price, value = {}, {}
   function price.Mat(id)
     if price[id] == nil then
@@ -122,11 +130,12 @@ local function Pricer(use, made, opts)
       local rest = need - held
       local l = not crafted and rest > 0 and not Vendor(id) and Route.Listed(id)
       local short = l and math.max(0, rest - l.qty) or 0
+      local thin = l and math.max(0, math.min(rest, l.qty) - l.qty / 2) or 0
       if rest > 0 and not buy then
         price[id] = false
       else
-        local cost = V.HeldCost(id, h.total, held) + (rest - short) * (buy or 0)
-          + short * (buy or 0) * SHORT_PENALTY
+        local cost = V.HeldCost(id, h.total, held) + (rest - short - thin) * (buy or 0)
+          + thin * (buy or 0) * THIN_PENALTY + short * (buy or 0) * SHORT_PENALTY
         price[id] = cost / need
       end
     end
@@ -135,7 +144,7 @@ local function Pricer(use, made, opts)
   function value.Out(id)
     if not opts.resale then return 0 end
     if value[id] == nil then
-      local n = math.max(made[id] or 0, 1)
+      local n = math.max(made[id] or guess[id] or 0, 1)
       value[id] = OutValue(id, n) / n
     end
     return value[id]
@@ -276,11 +285,30 @@ local function Cost(steps, opts)
   return plan, use, made
 end
 
+-- outputs if each recipe were crafted over all of its points between rank and to
+local function Guess(cands, rank, to)
+  local guess = {}
+  for _, c in ipairs(cands) do
+    local out = c.rec.out
+    if out then
+      local n = 0
+      for k = math.max(rank, c.learn), math.min(c.grey, to) - 1 do
+        local p = Points(c, k)
+        if p > 0 then n = n + 1 / p end
+      end
+      n = n * R.Made(c.rec)
+      if n > (guess[out] or 0) then guess[out] = n end
+    end
+  end
+  return guess
+end
+
 local function Best(cands, rank, to, opts)
   local plan
   local use, made = {}, {}
+  local guess = Guess(cands, rank, to)
   for _ = 1, PASSES do
-    local price, value = Pricer(use, made, opts)
+    local price, value = Pricer(use, made, guess, opts)
     local steps = Solve(cands, rank, to, price, value)
     if not steps then break end
     local p

@@ -13,7 +13,7 @@ M.Craft = C
 local MAX_DEPTH = 3   -- intermediates (bolts) crafted from intermediates...
 -- trainers teach a recipe up to this far under its yellow; the requirement itself is only in
 -- the trainer's list
-local TRAINER_SPAN = 25
+local TRAINER_SPAN = 20
 
 ------------------------------------------------------------------------------ Recipes
 -- profession name of a skill line: this character's, else the client's
@@ -48,7 +48,9 @@ end
 ------------------------------------------------------------------------------ Skill
 -- learn, yellow, green, grey, skill-ups when orange, recipe item, estimated learn, estimated
 -- bands. Trainer recipes all say learn 1 in the client data: the real requirement is known
--- once the trainer was visited (rec.train.req), until then it is yellow - TRAINER_SPAN.
+-- once the trainer was visited (rec.train.req), until then yellow - min(TRAINER_SPAN, the
+-- yellow-to-grey width): narrow-band crafts (bolts, shirts) are learnt close to yellow. Fitted
+-- on recipes whose items state their requirement: mean error 5 points, was 10.
 function C.Bands(rec)
   local d = M.CraftData[rec.id]
   local learn = rec.train and rec.train.req
@@ -58,7 +60,7 @@ function C.Bands(rec)
       if d[1] > 1 or d[6] ~= 0 or d[2] < 30 then
         learn = d[1]
       else
-        learn, estLearn = math.max(1, d[2] - TRAINER_SPAN), true
+        learn, estLearn = math.max(1, d[2] - math.min(TRAINER_SPAN, d[3] - d[2])), true
       end
     end
     local item = d[6] ~= 0 and d[6] or nil
@@ -429,8 +431,42 @@ local function CraftInstead(itemID)
 end
 C.CraftInstead = CraftInstead
 
+-- Held materials count as free: Medium Leather in the bags becomes Heavy Leather even when the
+-- AH sells Heavy Leather for less. spare(id) = held and not needed elsewhere.
+-- -> rec, crafts (from what's held, at most up to `short`), each (full cost, MatPrice)
+local function CraftFromHeld(itemID, short, spare)
+  local best, bestN, bestBuy
+  for _, rec in ipairs(R.Making(itemID) or {}) do
+    if R.KnownHere(rec) then
+      local n, buy = math.ceil(short / R.Made(rec)), 0
+      local held = false
+      for _, m in ipairs(rec.mats) do
+        local s = spare(m[1])
+        if s >= m[2] then
+          held = true
+          n = math.min(n, math.floor(s / m[2]))
+        else
+          local p = R.MatPrice(m[1])
+          buy = p and buy + p * m[2]
+          if not buy then break end
+        end
+      end
+      buy = buy and buy / R.Made(rec)
+      if held and buy and n > 0 and (not bestBuy or buy < bestBuy) then
+        best, bestN, bestBuy = rec, n, buy
+      end
+    end
+  end
+  local price = R.MatPrice(itemID)
+  if best and (not price or bestBuy < price) then
+    local e = R.Evaluate(best)
+    return best, bestN, e.complete and e.cost / R.Made(best) or nil
+  end
+end
+
 -- Shopping list for the queue. Each material: need, then taken from bags, bank, mail, alts in
--- that order; the rest is bought, or crafted (intermediates such as bolts) when cheaper.
+-- that order; the rest is bought, or crafted (intermediates such as bolts) from held
+-- materials, or when cheaper than buying.
 -- -> { mats = { { id, need, crafted, bags, bank, mail, alts, fromAlts = { {name, n} },
 --        buy, price } ... },
 --      crafts = { recipeID -> { n, saves } } intermediates to craft first,
@@ -465,24 +501,44 @@ function C.Shopping()
   -- intermediates: what still has to be bought, crafted instead when cheaper (repeated for
   -- the intermediates' own materials)
   local held = {}
+  local function Held(id)
+    held[id] = held[id] or C.Have(id)
+    return held[id]
+  end
+  local function Spare(id)
+    local h = Held(id)
+    return h.total + (h.crafted or 0) - (need[id] or 0)
+  end
+  -- saves: against buying at MatPrice; below 0 when held materials are worth more on the AH
+  local function Craft(id, rec, made, each)
+    local h = Held(id)
+    h.crafted = (h.crafted or 0) + made * R.Made(rec)
+    Add(rec, made, true)
+    local price = R.MatPrice(id)
+    if price and each then
+      local saves = (price - each) * made * R.Made(rec)
+      crafts[rec.id].saves = crafts[rec.id].saves + saves
+      out.saves = out.saves + saves
+    end
+  end
   for _ = 1, MAX_DEPTH do
     local more = false
     for _, id in ipairs(order) do
-      held[id] = held[id] or C.Have(id)
-      local h = held[id]
-      local short = need[id] - h.total - (h.crafted or 0)
-      if short > 0 then
+      local function Short()
+        local h = Held(id)
+        return need[id] - h.total - (h.crafted or 0)
+      end
+      if Short() > 0 then
+        local rec, made, each = CraftFromHeld(id, Short(), Spare)
+        if rec then
+          Craft(id, rec, made, each)
+          more = true
+        end
+      end
+      if Short() > 0 then
         local rec, each = CraftInstead(id)
         if rec then
-          local made = math.ceil(short / R.Made(rec))
-          h.crafted = (h.crafted or 0) + made * R.Made(rec)
-          Add(rec, made, true)
-          local price = R.MatPrice(id)
-          if price then
-            local saves = (price - each) * made * R.Made(rec)
-            crafts[rec.id].saves = crafts[rec.id].saves + saves
-            out.saves = out.saves + saves
-          end
+          Craft(id, rec, math.ceil(Short() / R.Made(rec)), each)
           more = true
         end
       end

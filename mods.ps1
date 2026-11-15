@@ -6,11 +6,16 @@ LocalMods manager: keeps local WoW addon changes in place across addon updates.
   pwsh -File mods.ps1 status     check only, change nothing
   pwsh -File mods.ps1 revert <patch-name>   undo one patch (its NEW back to OLD)
 
+-AddOns <path> points any of them at another install. Without it: _forever_\Interface\AddOns
+beside this folder when it sits in the WoW folder, else the standard install
+C:\Program Files (x86)\World of Warcraft\_forever_\Interface\AddOns.
+Exit code: 0 all fine, 1 a patch is BROKEN, 2 AddOns folder not found.
+
 
 Layout (next to this script):
   addons\<Name>\       overlay addons we own. Copied into the game's AddOns folder; this copy is the source.
   patches\*.patch      edits inside other people's addons (format: see README.md). Applied in name order.
-  backups\<time>\      each file as it was before this tool changed it
+  backups\<time>\      each file as it was before this tool changed it (this and below: not in git)
   state.json           addon versions seen last run (to report updates)
   last-run.md          the last run's report; BROKEN patches listed with what to do
 #>

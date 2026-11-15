@@ -24,10 +24,15 @@ when it isn't.
   up to a skill you type in.
 - **Queue**: click recipes to queue them (Shift-click adds 10). The queue works out what
   to take from your bags, bank, mailbox and alts, what to buy, and which intermediates
-  (bolts, bars...) to craft first. **Craft next** crafts the next step in one batch.
+  (bolts, bars...) to craft first. Materials you already hold are used first: Medium
+  Leather in your bags becomes Heavy Leather even when the AH sells it for less. **Craft
+  next** crafts the next step in one batch.
 - **Find**: every recipe of your professions, known or not, also those above your skill:
-  where to get the pattern (AH, vendor, trainer, drop), profit each, how many sell a day,
-  profit a day, and how many you need to sell before the pattern has paid for itself.
+  where to get the pattern (AH, vendor, trainer, drop), profit each, margin (profit as a
+  share of material cost), how many sell a day, profit a day, and how many you need to sell
+  before the pattern has paid for itself.
+- **Crafted item beside recipes**: hovering a recipe in Meionomics also shows the crafted
+  item's own tooltip (its stats) next to the recipe tooltip.
 - **Item tooltips**: best way to sell an item (AH, vendor, disenchant, craft into something),
   minimum buyout against market value, sales per day, how many you and your alts have.
 - **Auction House**: suggested posting prices on the Sell tab.

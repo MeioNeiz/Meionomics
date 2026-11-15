@@ -17,7 +17,8 @@ local V = C.Value
 local UI = {}
 M.CraftUI = UI
 
-local W, H = 480, 594
+local W, H = 480, 594   -- also the smallest size; the grip resizes up to MAX_W, MAX_H
+local MAX_W, MAX_H = 1000, 1200
 local LIST_TOP, LIST_BOTTOM = -84, 26   -- the inset holding the rows
 local ROW_H = 20
 local SORT_VERSION = 2   -- saved sort keys from before verdicts no longer exist
@@ -32,6 +33,7 @@ local SHOW_TEXT = { known = "Known", learnable = "Known + learnable", all = "All
 local frame, rows, offset = nil, {}, 0
 local built   -- { list, view, shown } from the last Refresh
 local state   -- M.db.craftUI: view; show, sort, flip per view; prof (standalone); auto
+local ColWidth   -- Frame, below
 
 local function Hex(c, text) return "|cff" .. c .. text .. "|r" end
 local function Money(c) return c and M.Money(c) or Hex(DIM, "-") end
@@ -619,9 +621,9 @@ local function FindClick(x)
 end
 
 local FIND_COLUMNS = {
-  profit = { { "Verdict", 76, "worth", left = true }, { "Recipe", 138, "name", name = true },
-    { "Req", 30, "req" }, { "Each", 52, "each" }, { "Sells/day", 50, "sold" },
-    { "Profit/day", 54, "day" }, { "Payback", 46, "pay" } },
+  profit = { { "Verdict", 76, "worth", left = true }, { "Recipe", 100, "name", name = true },
+    { "Req", 30, "req" }, { "Each", 52, "each" }, { "Margin", 38, "margin" },
+    { "Sells/day", 50, "sold" }, { "Profit/day", 54, "day" }, { "Payback", 46, "pay" } },
   skill = { { "Verdict", 82, "worth", left = true }, { "Recipe", 166, "name", name = true },
     { "Req", 34, "req" }, { "Per point", 60, "perPoint" }, { "Pts", 40, "span" },
     { "Total", 60, "total" } },
@@ -641,9 +643,13 @@ local function FindRow(x, rank, max, mode)
     local each, day = x.real and x.real.each, V.PerDay(x)
     local s = x.sales
     local sold = s and not s.bound and s.day or nil
-    sort.each, sort.sold, sort.day = each, sold, day
+    local cost = x.real and x.real.mats.cost
+    local margin = each and cost > 0 and each * x.real.n / cost or nil
+    sort.each, sort.margin, sort.sold, sort.day = each, margin, sold, day
     sort.pay = not x.known and V.PaySold(x) or nil
     cells = { FindVerdict(x), ReqCell(x, rank, max), Profit(each),
+      margin and Hex(margin >= 0 and GOOD or BAD, ("%d%%"):format(math.floor(margin * 100 + 0.5)))
+        or Hex(DIM, "-"),
       sold and (sold < 0.05 and "<0.1" or M.Count(sold)) or Hex(DIM, s and s.bound and "vendor" or "-"),
       day and Profit(day) or Hex(DIM, "-"), PayCell(x) }
   end
@@ -694,7 +700,8 @@ VIEWS.find = {
 -- (CraftRoute.lua). A plan takes 30-80 ms: kept ROUTE_KEEP seconds per profession, rank,
 -- target and options, so bag and queue refreshes redraw it without planning again.
 local ROUTE_KEEP, ROUTE_MAX = 120, 300
-local ROUTE_DEFAULT = { on = false, resale = true, unverified = false }
+-- confirmedOnly: trainer recipes only once a trainer visit has shown them
+local ROUTE_DEFAULT = { on = false, resale = true, confirmedOnly = false }
 local routes = {}   -- key -> { at, plan }
 R.OnUpdate(function() wipe(routes) end)
 
@@ -708,7 +715,7 @@ end
 
 local function RoutePlan(prof, rank, to)
   local r = state.route
-  local key = table.concat({ prof, rank, to, tostring(r.resale), tostring(r.unverified) }, ":")
+  local key = table.concat({ prof, rank, to, tostring(r.resale), tostring(r.confirmedOnly) }, ":")
   local now = GetTime()
   local c = routes[key]
   if c and now - c.at < ROUTE_KEEP then return c.plan end
@@ -716,7 +723,7 @@ local function RoutePlan(prof, rank, to)
     if now - old.at >= ROUTE_KEEP then routes[k] = nil end
   end
   c = { at = now, plan = C.Route.Plan(prof, rank, to,
-    { resale = r.resale, unverified = r.unverified }) }
+    { resale = r.resale, unverified = not r.confirmedOnly }) }
   routes[key] = c
   return c.plan
 end
@@ -734,11 +741,11 @@ end
 local function SkippedTip(tt, plan)
   local s = plan.skipped
   if s.unverified > 0 then
-    tt:AddLine(Hex(DIM, ("%s no trainer visit has confirmed: turn on \"~ Unverified trainer\"")
+    tt:AddLine(Hex(DIM, ("%s no trainer visit has confirmed: turn off \"Confirmed trainer only\"")
       :format(Plural(s.unverified, "recipe"))), nil, nil, nil, true)
   end
   if s.noSource > 0 then
-    tt:AddLine(Hex(DIM, ("%s left out: pattern not available")
+    tt:AddLine(Hex(DIM, ("%s left out: pattern not available or never seen")
       :format(Plural(s.noSource, "recipe"))), nil, nil, nil, true)
   end
 end
@@ -1062,7 +1069,7 @@ function EditCount(row, rec)
   end
   box.rec = rec
   box:ClearAllPoints()
-  box:SetPoint("RIGHT", row, "LEFT", VIEWS.queue.columns[1][2] + 40, 0)
+  box:SetPoint("RIGHT", row, "LEFT", ColWidth(VIEWS.queue, VIEWS.queue.columns[1]) + 40, 0)
   box:SetText(tostring(C.Queue()[rec.id] or 0))
   box:Show()
   box:SetFocus()
@@ -1108,13 +1115,23 @@ local function ShowTooltip(self)
   end
   self.data.tip(GameTooltip)
   GameTooltip:Show()
+  local d = self.data
+  M.ItemBeside.Show(GameTooltip, d.x and d.x.rec or (d.recID and M.Recipes.All()[d.recID]))
 end
 
-local function ListWidth(view)
+local function BaseWidth(view)
   local w = 0
   for _, col in ipairs(view.columns) do w = w + col[2] end
   return w
 end
+
+-- the name column takes whatever width the window has beyond the columns' own
+function ColWidth(view, col)
+  if not col.name then return col[2] end
+  return col[2] + math.max(0, math.floor(frame.list:GetWidth() - BaseWidth(view)))
+end
+
+local function ListWidth(view) return math.max(BaseWidth(view), math.floor(frame.list:GetWidth())) end
 
 local function MakeRow(i)
   local b = CreateFrame("Button", nil, frame.list)
@@ -1173,14 +1190,14 @@ local function Layout(view)
     end
     h:ClearAllPoints()
     h:SetPoint("BOTTOMLEFT", frame.Inset, "TOPLEFT", 2 + x, -2)
-    h:SetSize(col[2] + 2, 24)
+    h:SetSize(ColWidth(view, col) + 2, 24)
     h:SetText(col[1])
     local fs = h:GetFontString()
     local sorted = col[3] ~= nil and col[3] == key
     if fs then fs:SetTextColor(1, sorted and 1 or 0.82, sorted and 1 or 0) end
     h.key = col[3]
     h:Show()
-    x = x + col[2]
+    x = x + ColWidth(view, col)
   end
   for i = #view.columns + 1, #frame.heads do frame.heads[i]:Hide() end
 end
@@ -1217,7 +1234,7 @@ local function DrawRow(b, d, view, rowH)
       b.icon:SetPoint("LEFT", x + 2, 0)
       if d.icon then b.icon:SetTexture(d.icon) end
       local nx = wide and 4 or x + size + 6
-      local nameW = wide and ListWidth(view) - 8 or col[2] - size - 8
+      local nameW = wide and ListWidth(view) - 8 or ColWidth(view, col) - size - 8
       b.name:SetPoint(twoLine and "TOPLEFT" or "LEFT", nx, twoLine and top or 0)
       b.name:SetWidth(nameW)
       b.sub:SetPoint("BOTTOMLEFT", nx, 4)
@@ -1233,7 +1250,7 @@ local function DrawRow(b, d, view, rowH)
         or wide and (c == #view.columns or d.allCells) and d.cells and d.cells[used] or "")
       fs:Show()
     end
-    x = x + col[2]
+    x = x + ColWidth(view, col)
   end
   for c = used + 1, #b.cells do b.cells[c]:Hide() end
   local queued = d.x and d.recID and C.Queue()[d.recID]
@@ -1577,16 +1594,15 @@ local function CreateRouteBar()
       end)
     end
     root:CreateDivider()
-    root:CreateCheckbox("~ Unverified trainer", function() return state.route.unverified end,
+    root:CreateCheckbox("Confirmed trainer only", function() return state.route.confirmedOnly end,
       function()
-        state.route.unverified = not state.route.unverified
+        state.route.confirmedOnly = not state.route.confirmedOnly
         UI.Refresh()
       end)
   end)
   opts:SetPoint("RIGHT", queue, "LEFT", -6, 0)
   opts:SetSelectionText(function()
     return (state.route.resale and "Sell crafts" or "Mats only")
-      .. (state.route.unverified and " ~" or "")
   end)
   local to = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
   to:SetSize(34, 20)
@@ -1712,10 +1728,44 @@ local function CreateFindBar()
   bar:Hide()
 end
 
+local function CreateGrip()
+  local grip = CreateFrame("Button", nil, frame)
+  grip:SetSize(16, 16)
+  grip:SetPoint("BOTTOMRIGHT", -3, 3)
+  grip:SetFrameLevel(frame:GetFrameLevel() + 20)
+  grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+  grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+  grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+  grip:SetScript("OnMouseDown", function(_, button)
+    if button == "LeftButton" then frame:StartSizing("BOTTOMRIGHT") end
+  end)
+  grip:SetScript("OnMouseUp", function()
+    frame:StopMovingOrSizing()
+    frame:SetUserPlaced(false)
+    local w, h = math.floor(frame:GetWidth() + 0.5), math.floor(frame:GetHeight() + 0.5)
+    state.size = (w ~= W or h ~= H) and { w, h } or nil
+    SavePlace()
+  end)
+  grip:SetScript("OnDoubleClick", function()
+    state.size = nil
+    frame:SetSize(W, H)
+  end)
+  grip:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine("Drag to resize")
+    GameTooltip:AddLine("Double-click: default size", 0.7, 0.7, 0.7)
+    GameTooltip:Show()
+  end)
+  grip:SetScript("OnLeave", GameTooltip_Hide)
+end
+
 local function Create()
   frame = CreateFrame("Frame", "MeionomicsCraftFrame", UIParent, "ButtonFrameTemplate")
   ButtonFrameTemplate_HidePortrait(frame)
-  frame:SetSize(W, H)
+  local size = state.size or {}
+  frame:SetSize(size[1] or W, size[2] or H)
+  frame:SetResizable(true)
+  frame:SetResizeBounds(W, H, MAX_W, MAX_H)
   frame:SetPoint("CENTER")
   frame:SetFrameStrata("HIGH")
   frame:SetToplevel(true)
@@ -1788,12 +1838,16 @@ local function Create()
   frame.heads = {}
   frame.status = frame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
   frame.status:SetPoint("BOTTOMLEFT", 12, 8)
-  frame.status:SetPoint("BOTTOMRIGHT", -12, 8)
+  frame.status:SetPoint("BOTTOMRIGHT", -22, 8)   -- clear of the resize grip
   frame.status:SetJustifyH("LEFT")
   frame.status:SetWordWrap(false)
   frame:EnableMouseWheel(true)
   frame:SetScript("OnMouseWheel", function(_, delta) Scroll(delta) end)
   frame:SetScript("OnShow", function() UI.Refresh() end)
+  frame:SetScript("OnSizeChanged", function()
+    if built and frame:IsShown() then Draw(built.list, built.view) end
+  end)
+  CreateGrip()
   frame:Hide()
 end
 
@@ -1883,6 +1937,7 @@ function M.OnLoad()
   end
   if state.auto == nil then state.auto = true end
   state.route = type(state.route) == "table" and state.route or {}
+  state.route.unverified = nil
   for k, v in pairs(ROUTE_DEFAULT) do
     if state.route[k] == nil then state.route[k] = v end
   end

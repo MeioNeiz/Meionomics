@@ -207,9 +207,9 @@ local function EvidenceRows(rows, ev, Money)
 end
 
 -- Shift: your own auction history (TSM's ledger and accounting)
--- KafStats (wow-stats' addon, optional): lifetime totals from TSM's full ledger, vendor too
+-- MeioStats (wow-stats' addon, optional): lifetime totals from TSM's full ledger, vendor too
 local function Totals(itemID)
-  local api = KafStats and KafStats.Money and KafStats.Money.ItemTotals
+  local api = MeioStats and MeioStats.Money and MeioStats.Money.ItemTotals
   if not api then return nil end
   local ok, t = pcall(api, itemID)
   return ok and type(t) == "table" and t or nil

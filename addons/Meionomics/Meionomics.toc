@@ -1,10 +1,10 @@
 ## Interface: 16001
 ## Title: Meionomics
 ## Notes: Crafting profit, skill-up routes and item prices for WoW Forever. Uses TSM prices when installed. /meio craft
-## Version: 1.0.0
+## Version: 1.1.0
 ## Author: MeioNeiz
 ## X-Website: https://github.com/MeioNeiz/Meionomics
-## OptionalDeps: TradeSkillMaster, Syndicator, CraftProfit
+## OptionalDeps: TradeSkillMaster, Syndicator
 ## SavedVariables: MeionomicsDB
 
 Core.lua
@@ -29,3 +29,4 @@ AuctionBrowse.lua
 Patterns.lua
 AuctionPatterns.lua
 History.lua
+ItemBeside.lua
