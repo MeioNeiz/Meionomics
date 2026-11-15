@@ -1,0 +1,10 @@
+Title: TSM AppHelper loads without TradeSkillMaster
+Why: AppHelper declares a hard dependency on TSM, so without TSM its AppData.lua (the desktop app's price data) never loads. As optional deps it loads either way, after TSM or Meionomics, whichever defines TSM_APPHELPER_LOAD_DATA first.
+
+=== FILE TradeSkillMaster_AppHelper\TradeSkillMaster_AppHelper.toc
+--- OLD
+## Dependency: TradeSkillMaster
+--- NEW
+# LOCAL FIX: optional, so Meionomics gets the price data without TSM installed
+## OptionalDeps: TradeSkillMaster, Meionomics
+=== END

@@ -1,0 +1,11 @@
+Title: TSM alt realm tooltip crash (Settings > Tooltip)
+Why: tooltip alt-realm lines joined a nil realm name; now uses blank.
+
+=== FILE TradeSkillMaster\LibTSMApp\Source\Tooltip\Internal\AuctionDB.lua
+=== COUNT all
+=== INLINE
+--- OLD
+private.settings.auctionDBAltRealm.." - "
+--- NEW
+(private.settings.auctionDBAltRealm or "").." - "
+=== END

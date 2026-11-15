@@ -1,0 +1,11 @@
+Title: TSM item tooltips always compare with equipped gear
+Why: TSM (auction, bags, crafting lists) only showed the equipped-item comparison while Shift was held,
+inside a local function no hook can reach. Now the comparison shows whenever an item tooltip is up.
+
+=== FILE TradeSkillMaster\LibTSMUI\Source\Tooltip\Tooltip.lua
+=== INLINE
+--- OLD
+if private.currentParent and GameTooltip:IsVisible() and IsShiftKeyDown() then
+--- NEW
+if private.currentParent and GameTooltip:IsVisible() then -- LOCAL FIX: always compare, no Shift needed
+=== END

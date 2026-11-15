@@ -1,0 +1,17 @@
+Title: TSM Chat Tab dropdown crash (Settings > General)
+Why: the dropdown asserted when the saved chat tab was blank or not visible; it now selects nothing.
+
+=== FILE TradeSkillMaster\LibTSMUI\Source\Components\Dropdown\SelectionDropdown.lua
+--- OLD
+	local item = itemKey and Table.GetDistinctKey(self._itemKeyLookup, itemKey) or nil
+--- NEW
+	local item = nil
+	if itemKey ~= nil and itemKey ~= "" then
+		for k, v in pairs(self._itemKeyLookup) do
+			if v == itemKey then
+				item = k
+				break
+			end
+		end
+	end
+=== END
