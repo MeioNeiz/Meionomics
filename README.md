@@ -117,6 +117,7 @@ which mobs drop it; without it some patterns show "source unknown").
 | 13-tsm-always-compare | TSM item tooltips compare with your equipped gear without holding Shift |
 | 15-apphelper-without-tsm | TSM's AppHelper loads without TSM, so Meionomics can read the desktop app's prices on its own |
 | 16-tsm-auction-selected-hook | Lets Meionomics know which result you clicked in TSM's auction window (for the price history panel) |
+| 17-tsm-recipe-row-tooltip | Hovering a recipe in TSM's profession window shows the crafted item's tooltip (or the enchant's spell) |
 
 A patch for an addon you don't have is skipped.
 

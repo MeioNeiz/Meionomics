@@ -1,0 +1,49 @@
+Title: TSM profession window shows the crafted item's tooltip on hovering a recipe
+Why: TSM's recipe list (every profession) shows no tooltip on hover, so the made item's stats are only visible after selecting it. Hovering a recipe row now shows the same tooltip as TSM's result icon in the details pane: the item made, or the enchant's spell.
+
+=== FILE TradeSkillMaster\App\CraftingUI\ProfessionScrollTable.lua
+--- OLD
+local UIElements = App:From("LibTSMUI"):Include("UIElements")
+--- NEW
+local UIElements = App:From("LibTSMUI"):Include("UIElements")
+-- LOCAL FIX: recipe row tooltips
+local LocalRecipeString = App:From("LibTSMTypes"):Include("Crafting.RecipeString")
+local LocalTooltipUI = App:From("LibTSMUI"):Include("TooltipUI")
+-- the made item, else the craft (enchants): as CraftDetails' result icon
+local function LocalResultTooltip(craftString)
+	local itemString = Profession.GetResultInfo(craftString)
+	if itemString and itemString ~= "" then
+		return itemString
+	elseif TradeSkill.IsClassicCrafting() then
+		return "craft:"..(Profession.GetIndexByCraftString(craftString) or craftString)
+	end
+	return LocalRecipeString.FromCraftString(craftString)
+end
+=== END
+
+=== FILE TradeSkillMaster\App\CraftingUI\ProfessionScrollTable.lua
+--- OLD
+	local data = self._rawData[row:GetDataIndex()]
+	if not self._isCraftString[data] or TradeSkill.GetType() ~= TradeSkill.TYPE.PLAYER then
+		return
+	end
+--- NEW
+	local data = self._rawData[row:GetDataIndex()]
+	if self._isCraftString[data] then
+		local ok, tip = pcall(LocalResultTooltip, data) -- LOCAL FIX: recipe row tooltip
+		if ok and tip then
+			row:ShowTooltip(tip)
+		end
+	end
+	if not self._isCraftString[data] or TradeSkill.GetType() ~= TradeSkill.TYPE.PLAYER then
+		return
+	end
+=== END
+
+=== FILE TradeSkillMaster\App\CraftingUI\ProfessionScrollTable.lua
+--- OLD
+function ProfessionScrollTable.__protected:_HandleRowLeave(row)
+--- NEW
+function ProfessionScrollTable.__protected:_HandleRowLeave(row)
+	LocalTooltipUI.Hide() -- LOCAL FIX: recipe row tooltip
+=== END
