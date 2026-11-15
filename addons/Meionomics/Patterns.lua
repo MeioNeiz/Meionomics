@@ -131,10 +131,14 @@ function Pt.Alert(item, perDay)
   local rec = db and db.items[item]
   if not (rec and rec.up) or rec.told then return end
   rec.told = M.Now()
-  local link = select(2, C_Item.GetItemInfo(item)) or C_Item.GetItemNameByID(item)
-    or ("item " .. item)
-  M.Print(("%s %s is up for %s (worth ~%s/day)"):format(Pt.STAR, link, M.Money(rec.p),
-    M.Money(perDay)))
+  local price = rec.p
+  -- uncached items have no link yet; wait for it rather than print a bare ID
+  Item:CreateFromItemID(item):ContinueOnItemLoad(function()
+    local link = select(2, C_Item.GetItemInfo(item)) or C_Item.GetItemNameByID(item)
+    if not link then return end
+    M.Print(("%s %s is up for %s (worth ~%s/day)"):format(Pt.STAR, link, M.Money(price),
+      M.Money(perDay)))
+  end)
 end
 
 -- after a scan: alert the watched ones in seen. C.Value.ForProf builds every recipe of a

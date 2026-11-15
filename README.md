@@ -33,10 +33,11 @@ when it isn't.
 - **Auction House**: suggested posting prices on the Sell tab.
 - **Price history**: click any result in TSM's Browse or Sniper tab and a panel opens beside
   TSM's window: whether the price is rising, steady or falling (3-day vs 60-day average from
-  TSM), the 3/14/60-day and region averages, the lowest buyout and how many are listed now,
-  and a 30-day daily chart of market value and lowest buyout. The chart builds from the AH
-  scan Meionomics runs when you open the Auction House, one point a day, so it fills in over
-  the days you play; items you click are tracked from then on. Needs patch 16.
+  TSM), the region average and how many are listed now, the 60, 14 and 3-day averages and the
+  current lowest buyout as bars, so there's a chart from the first click, and a 30-day daily
+  chart of market value and lowest buyout. The daily chart builds from the AH scan Meionomics
+  runs when you open the Auction House, one point a day, so it fills in over the days you
+  play; items you click are tracked from then on. Needs patch 16.
 
 Hover any row for the details; hold Shift for the full breakdown.
 

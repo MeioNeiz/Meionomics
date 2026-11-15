@@ -216,6 +216,7 @@ function A.ScanTime() return realmDB and realmDB.scanTime end
 ------------------------------------------------------------------------------ Scanning
 -- Reading is spread over frames by time, not row count: big AHs are 50k rows
 local reading
+local lastRead = { n = 0, t = 0 }
 local function ReadReplicate()
   local CA = C_AuctionHouse
   local total = CA.GetNumReplicateItems()
@@ -241,7 +242,11 @@ local function ReadReplicate()
     local listings = reading.listings
     reading = nil
     A.Record(A.Aggregate(listings), M.Now())
-    M.Print(("AH scan read: %d auctions."):format(#listings))
+    -- the list fires updates again as seller names fill in; re-read, but say so once
+    if #listings ~= lastRead.n or M.Now() - lastRead.t > 120 then
+      M.Print(("AH scan read: %d auctions."):format(#listings))
+    end
+    lastRead.n, lastRead.t = #listings, M.Now()
     if M.History then M.History.Refresh() end
   end
   Step()

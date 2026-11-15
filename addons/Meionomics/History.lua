@@ -1,9 +1,9 @@
 -- Price history panel docked beside TSM's auction window (Browse and Sniper): click a result
 -- and it shows that item. Needs LocalMods patch 16 (TSMLocalAuctionSelect). /meio history
 -- <item> shows it without TSM.
--- Trend: TSM's own averages (DBRecent ~3 days, DBMarket 14, DBHistorical 60), there from day
--- one for every item. Chart: our daily rows (Auction.lua), one per day an AH scan saw the item;
--- showing an item here starts recording it.
+-- Trend and level bars: TSM's own averages (DBRecent ~3 days, DBMarket 14, DBHistorical 60),
+-- there from day one for every item. Chart: our daily rows (Auction.lua), one per day an AH
+-- scan saw the item; showing an item here starts recording it.
 local _, M = ...
 local P, A = M.Prices, M.Auction
 local H = {}
@@ -77,12 +77,24 @@ local function Text(parent, font, ...)
   return fs
 end
 
--- label left, value right, on one line
+local BLUE = { 0.42, 0.6, 0.85 }
+local GOLD = { 0.95, 0.79, 0.3 }
+
+-- label left, value right, on one line; frac (0..1) draws a bar behind it in color
 local function Row(parent)
   local r = { left = Text(parent, "GameFontHighlightSmall"),
-    right = Text(parent, "GameFontHighlightSmall") }
+    right = Text(parent, "GameFontHighlightSmall"), bar = parent:CreateTexture(nil, "ARTWORK") }
   r.right:SetJustifyH("RIGHT")
-  function r:Set(y, left, right)
+  function r:Set(y, left, right, frac, color)
+    self.bar:ClearAllPoints()
+    if frac then
+      self.bar:SetPoint("TOPLEFT", PAD - 3, y + 2)
+      self.bar:SetSize(math.max(2, (WIDTH - 2 * PAD + 6) * frac), 13)
+      self.bar:SetColorTexture(color[1], color[2], color[3], 0.3)
+      self.bar:Show()
+    else
+      self.bar:Hide()
+    end
     self.left:ClearAllPoints()
     self.left:SetPoint("TOPLEFT", PAD, y)
     self.right:ClearAllPoints()
@@ -93,6 +105,7 @@ local function Row(parent)
     self.right:Show()
   end
   function r:Hide()
+    self.bar:Hide()
     self.left:Hide()
     self.right:Hide()
   end
@@ -223,10 +236,10 @@ local function Fill(itemID)
   panel.name:SetText((color and color.hex or "|cffffffff") .. (name or ("item " .. itemID)) .. "|r")
 
   local n, y = 0, -50
-  local function Add(left, right)
+  local function Add(left, right, frac, color)
     n = n + 1
-    panel.rows[n]:Set(y, left, right)
-    y = y - 14
+    panel.rows[n]:Set(y, left, right, frac, color)
+    y = y - (frac and 16 or 14)
   end
   local function Gap() y = y - 6 end
 
@@ -236,16 +249,22 @@ local function Fill(itemID)
   else
     Add(C("dim", "No TSM price data"))
   end
-  if t.recent then Add("Last 3 days", M.Money(t.recent)) end
-  if t.market then Add("Last 14 days", M.Money(t.market)) end
-  if t.historical then Add("Last 60 days", M.Money(t.historical)) end
-  if t.regionMarket then Add(C("grey", "Region"), M.Money(t.regionMarket)) end
+  -- oldest first, so reading down follows time; bars start at zero so lengths stay honest
+  local min = P.Get(itemID, "minBuyout")
+  local levels = { { "60-day average", t.historical, BLUE }, { "14-day average", t.market, BLUE },
+    { "3-day average", t.recent, BLUE }, { "Lowest now", min, GOLD } }
+  local top = 0
+  for _, l in ipairs(levels) do top = math.max(top, l[2] or 0) end
+  Gap()
+  for _, l in ipairs(levels) do
+    if l[2] then Add(l[1], M.Money(l[2]), l[2] / top, l[3]) end
+  end
+  if not min then Add("Lowest now", C("dim", "none up")) end
 
   local ev = P.Evidence(itemID)
   local s = P.SellRate(itemID)
   Gap()
-  local min = P.Get(itemID, "minBuyout")
-  Add("Lowest now", min and M.Money(min) or C("dim", "none up"))
+  if t.regionMarket then Add(C("grey", "Region average"), M.Money(t.regionMarket)) end
   if s and s.listed then Add(C("grey", "Listed"), tostring(s.listed)) end
   if s and s.perDay then Add(C("grey", "Region sold/day"), M.Count(s.perDay)) end
 
