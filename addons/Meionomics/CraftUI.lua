@@ -597,8 +597,7 @@ end
 
 local function PayCell(x)
   if x.known or not x.payN then return Hex(DIM, "-") end
-  if x.payDays then return ("%dd"):format(math.max(1, math.ceil(x.payDays))) end
-  return ("%d cr"):format(x.payN)
+  return ("%d sold"):format(V.PaySold(x))
 end
 
 local function FindTip(x, rank)
@@ -620,9 +619,9 @@ local function FindClick(x)
 end
 
 local FIND_COLUMNS = {
-  profit = { { "Verdict", 82, "worth", left = true }, { "Recipe", 166, "name", name = true },
-    { "Req", 34, "req" }, { "Each", 56, "each" }, { "/day", 54, "day" },
-    { "Payback", 50, "pay" } },
+  profit = { { "Verdict", 76, "worth", left = true }, { "Recipe", 138, "name", name = true },
+    { "Req", 30, "req" }, { "Each", 52, "each" }, { "Sells/day", 50, "sold" },
+    { "Profit/day", 54, "day" }, { "Payback", 46, "pay" } },
   skill = { { "Verdict", 82, "worth", left = true }, { "Recipe", 166, "name", name = true },
     { "Req", 34, "req" }, { "Per point", 60, "perPoint" }, { "Pts", 40, "span" },
     { "Total", 60, "total" } },
@@ -640,8 +639,12 @@ local function FindRow(x, rank, max, mode)
         or Hex(DIM, "?") }
   else
     local each, day = x.real and x.real.each, V.PerDay(x)
-    sort.each, sort.day, sort.pay = each, day, not x.known and (x.payDays or x.payN) or nil
+    local s = x.sales
+    local sold = s and not s.bound and s.day or nil
+    sort.each, sort.sold, sort.day = each, sold, day
+    sort.pay = not x.known and V.PaySold(x) or nil
     cells = { FindVerdict(x), ReqCell(x, rank, max), Profit(each),
+      sold and (sold < 0.05 and "<0.1" or M.Count(sold)) or Hex(DIM, s and s.bound and "vendor" or "-"),
       day and Profit(day) or Hex(DIM, "-"), PayCell(x) }
   end
   local note = x.v.note and Hex(DIM, x.v.note)

@@ -154,12 +154,17 @@ function V.Fill(x, rank)
   end
 end
 
--- a week's sellable batch (x.real.n) spread over the week; learning is left to payback
--- (x.payN, x.payDays), so a good pattern still costing 5g doesn't show a loss a day
+-- profit each x crafts sold here a day (x.sales.day, the Sells/day column); learning is left
+-- to payback (x.payN, x.payDays), so a good pattern still costing 5g doesn't show a loss a day.
+-- nil when it only sells to a vendor or has no price
 function V.PerDay(x)
-  local each = x.real and x.real.each
-  return each and each * x.real.n / WEEK or nil
+  local each, s = x.real and x.real.each, x.sales
+  if not (each and s) or s.bound then return nil end
+  return each * s.day / R.Made(x.rec)
 end
+
+-- units to sell before learning has paid for itself
+function V.PaySold(x) return x.payN and x.payN * R.Made(x.rec) or nil end
 
 ------------------------------------------------------------------------------ Verdict
 local function Each(c) return Signed(c) .. " each" end
@@ -191,11 +196,13 @@ local function MatsText(m)
   return ("your mats %d/%d"):format(m.held, m.need)
 end
 
+local function Days(x)
+  if not x.payDays then return "" end
+  return (" (~%s)"):format(Plural(math.max(1, math.ceil(x.payDays)), "day"))
+end
+
 local function PayText(x)
-  if x.payDays then
-    return ("pays back in %s"):format(Plural(math.max(1, math.ceil(x.payDays)), "day"))
-  end
-  if x.payN then return ("pays back after %s"):format(Plural(x.payN, "craft")) end
+  if x.payN then return ("pays back after %d sold%s"):format(V.PaySold(x), Days(x)) end
 end
 
 local function PointText(p)
@@ -217,10 +224,7 @@ local function MatsNote(m)
 end
 
 local function PayNote(x)
-  if x.payDays then
-    return ("repays in %s"):format(Plural(math.max(1, math.ceil(x.payDays)), "day"))
-  end
-  if x.payN then return ("repays in %s"):format(Plural(x.payN, "craft")) end
+  if x.payN then return ("repays after %d sold%s"):format(V.PaySold(x), Days(x)) end
 end
 
 local function PointNote(p)
@@ -284,9 +288,8 @@ local function JudgeProfit(x, ctx)
         return Make("level", Join(LearnText(x), PointText(per)), week,
           Join(LearnNote(x), PointNote(per)))
       end
-      local days = x.payDays and (" (~%d days)"):format(math.ceil(x.payDays)) or ""
-      return Make("learn", ("%s, pays back after %s%s"):format(LearnText(x),
-        Plural(x.payN, "craft"), days), week, Join(LearnNote(x), PayNote(x)))
+      return Make("learn", ("%s, %s"):format(LearnText(x), PayText(x)), week,
+        Join(LearnNote(x), PayNote(x)))
     end
     if s and not s.bound and s.day < SLOW_PER_DAY then
       local up = s.clear and s.clear > WEEK

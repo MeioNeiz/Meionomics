@@ -1,0 +1,39 @@
+Title: TSM auction selection hook point (used by Meionomics price history)
+Why: TSM's Browse and Sniper results have no public way to tell another addon which item is selected, so Meionomics can't show that item's price history beside TSM's window. Adds TSMLocalAuctionSelect.callbacks: each is called with the selected row's base item string (nil when nothing is selected) and TSM's window frame (nil when the results table is gone, e.g. tab switched).
+
+=== FILE TradeSkillMaster\App\AuctionUI\AuctionBuyScan.lua
+--- OLD
+local private = {
+	confirmationVisible = false,
+}
+--- NEW
+local private = {
+	confirmationVisible = false,
+}
+-- LOCAL FIX: lets overlays (Meionomics price history) follow the selected auction's item
+TSMLocalAuctionSelect = TSMLocalAuctionSelect or { callbacks = {} }
+function private.LocalSelect(state, selection)
+	local base = state.auctionScrollTable and state.auctionScrollTable:GetBaseElement()
+	local frame = base and base:_GetBaseFrame()
+	local itemString = selection and selection:GetBaseItemString()
+	for _, func in ipairs(TSMLocalAuctionSelect.callbacks) do
+		xpcall(func, geterrorhandler(), itemString, frame)
+	end
+end
+=== END
+
+=== FILE TradeSkillMaster\App\AuctionUI\AuctionBuyScan.lua
+--- OLD
+			state.findResult = nil
+		end
+		local postContext = self:_GetPostContext()
+		state.selectionCanPost = postContext and postContext:CanPost() or false
+	elseif action == "ACTION_FIND_SELECTED_AUCTION" then
+--- NEW
+			state.findResult = nil
+		end
+		local postContext = self:_GetPostContext()
+		state.selectionCanPost = postContext and postContext:CanPost() or false
+		private.LocalSelect(state, selection) -- LOCAL FIX: Meionomics price history
+	elseif action == "ACTION_FIND_SELECTED_AUCTION" then
+=== END

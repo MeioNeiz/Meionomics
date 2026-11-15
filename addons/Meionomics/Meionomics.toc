@@ -28,3 +28,4 @@ AuctionUI.lua
 AuctionBrowse.lua
 Patterns.lua
 AuctionPatterns.lua
+History.lua

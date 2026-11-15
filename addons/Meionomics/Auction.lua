@@ -1,6 +1,7 @@
 -- Our own auction house data, per realm-faction, so TSM's app data can retire. From GetAll scans
--- (C_AuctionHouse.ReplicateItems): ours on AH open, or TSM's read passively while TSM is loaded
--- (the 15 min throttle is shared, so we never start one then).
+-- (C_AuctionHouse.ReplicateItems), started on AH open at most every 15 min (the server's
+-- throttle). TSM on Forever never starts one itself (its full scan dialog is Mists-only) but
+-- records any GetAll it sees, so it gets ours too; someone else's is read the same way.
 -- Per item: the last scan, a 14-day market average, and for watched items (recipe outputs and
 -- materials, things posted or bought) daily rows for 30 days. Full daily history for every item
 -- would be megabytes of SavedVariables.
@@ -146,6 +147,13 @@ function A.History(itemID)
   return rec and Days(rec) or {}
 end
 
+-- today's row so far { day, min, mkt, qty }, nil before today's first scan saw the item
+function A.Today(itemID)
+  local rec = realmDB and realmDB.items[itemID]
+  if not (rec and rec.dm and rec.day == math.floor(M.Now() / DAY)) then return nil end
+  return { day = rec.day, min = rec.dmin, mkt = rec.dm, qty = rec.dq }
+end
+
 -- one finished scan into the history; items not in it had nothing up
 function A.Record(byItem, now)
   local today = math.floor(now / DAY)
@@ -234,16 +242,13 @@ local function ReadReplicate()
     reading = nil
     A.Record(A.Aggregate(listings), M.Now())
     M.Print(("AH scan read: %d auctions."):format(#listings))
+    if M.History then M.History.Refresh() end
   end
   Step()
 end
 
-local function TSMLoaded()
-  return C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("TradeSkillMaster")
-end
-
 local function StartScan()
-  if M.db.autoScan == false or TSMLoaded() then return end
+  if M.db.autoScan == false then return end
   local last = realmDB.getAllTime or 0
   if M.Now() - last < THROTTLE then return end
   realmDB.getAllTime = M.Now()
@@ -274,6 +279,5 @@ end)
 
 M.commands.autoscan = function(rest)
   if rest == "off" then M.db.autoScan = false elseif rest == "on" then M.db.autoScan = nil end
-  M.Print("AH scan on opening: " .. (M.db.autoScan == false and "off" or "on")
-    .. (TSMLoaded() and " (TSM is loaded: its scans are read instead)" or ""))
+  M.Print("AH scan on opening: " .. (M.db.autoScan == false and "off" or "on"))
 end

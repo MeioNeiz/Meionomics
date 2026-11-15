@@ -26,10 +26,17 @@ when it isn't.
   to take from your bags, bank, mailbox and alts, what to buy, and which intermediates
   (bolts, bars...) to craft first. **Craft next** crafts the next step in one batch.
 - **Find**: every recipe of your professions, known or not, also those above your skill:
-  where to get the pattern (AH, vendor, trainer, drop) and whether it pays for itself.
+  where to get the pattern (AH, vendor, trainer, drop), profit each, how many sell a day,
+  profit a day, and how many you need to sell before the pattern has paid for itself.
 - **Item tooltips**: best way to sell an item (AH, vendor, disenchant, craft into something),
   minimum buyout against market value, sales per day, how many you and your alts have.
 - **Auction House**: suggested posting prices on the Sell tab.
+- **Price history**: click any result in TSM's Browse or Sniper tab and a panel opens beside
+  TSM's window: whether the price is rising, steady or falling (3-day vs 60-day average from
+  TSM), the 3/14/60-day and region averages, the lowest buyout and how many are listed now,
+  and a 30-day daily chart of market value and lowest buyout. The chart builds from the AH
+  scan Meionomics runs when you open the Auction House, one point a day, so it fills in over
+  the days you play; items you click are tracked from then on. Needs patch 16.
 
 Hover any row for the details; hold Shift for the full breakdown.
 
@@ -40,8 +47,9 @@ Hover any row for the details; hold Shift for the full breakdown.
 Install [TradeSkillMaster](https://tradeskillmaster.com) the way you normally install addons.
 For market prices, also run the TSM desktop application so it downloads auction data.
 
-Without TSM, Meionomics still works: open the Auction House and it scans it (at most once
-every 15 minutes) to get prices.
+Meionomics also scans the Auction House itself when you open it (at most once every 15
+minutes): that gives it prices without TSM and builds its price history. `/meio autoscan off`
+turns this off.
 
 ### 2. Meionomics
 
@@ -81,6 +89,8 @@ repository. To undo one fix: `pwsh -ExecutionPolicy Bypass -File mods.ps1 revert
 
 - Open a profession: the panel docks beside it. `/meio craft` opens it on its own.
 - `/meio find` opens the Find view.
+- `/meio history <item>` opens the price history anywhere; `/meio history off` turns the
+  panel off.
 - `/meio options` chooses what item tooltips show; `/meio` lists the other commands.
 
 Click a row to queue it, right-click to remove one, Ctrl-click to type a count, Alt-click
@@ -100,6 +110,7 @@ which mobs drop it; without it some patterns show "source unknown").
 | 12-tsm-enchanting-scan | TSM's Enchanting crafting window stayed empty and its Craft button crashed: TSM looks for retail enchanting scrolls that WoW Forever doesn't have |
 | 13-tsm-always-compare | TSM item tooltips compare with your equipped gear without holding Shift |
 | 15-apphelper-without-tsm | TSM's AppHelper loads without TSM, so Meionomics can read the desktop app's prices on its own |
+| 16-tsm-auction-selected-hook | Lets Meionomics know which result you clicked in TSM's auction window (for the price history panel) |
 
 A patch for an addon you don't have is skipped.
 
