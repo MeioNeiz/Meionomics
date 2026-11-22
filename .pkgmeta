@@ -1,0 +1,14 @@
+package-as: Meionomics
+
+move-folders:
+  Meionomics/addons/Meionomics: Meionomics
+
+ignore:
+  - docs
+  - patches
+  - mods.ps1
+  - README.md
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown

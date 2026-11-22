@@ -35,7 +35,20 @@ when it isn't.
   item's own tooltip (its stats) next to the recipe tooltip.
 - **Item tooltips**: best way to sell an item (AH, vendor, disenchant, craft into something),
   minimum buyout against market value, sales per day, how many you and your alts have.
-- **Auction House**: suggested posting prices on the Sell tab.
+- **Auction House**: suggested posting prices on the Sell tab, and a **Meionomics** tab:
+  - **Browse**: every auction with its seller, % of market value and region sales; filter
+    to deals below market or below what a vendor pays.
+  - **Patterns**: recipes up for sale now, with the crafting panel's verdict on whether
+    they're worth learning.
+  - **Sell**: the items in your bags worth posting, each at a price that still sells within
+    a day (learnt from your own posts); one key press posts the next.
+  - **Shopping**: buys what the craft queue's shopping list still needs.
+  - **BiS upgrades**: gear on the AH that beats what you wear (needs Forever Leveling BiS).
+- **Worth window** (`/meio worth`): what every character's bags, bank, gear, mail and
+  auctions are worth.
+- **Merchants**: buttons under a vendor's window to buy the queue's materials that vendor
+  sells, and to sell junk. Nothing is bought or sold without a click.
+- **Quest rewards**: what each reward choice is worth to you.
 - **Price history**: click any result in TSM's Browse or Sniper tab and a panel opens beside
   TSM's window: whether the price is rising, steady or falling (3-day vs 60-day average from
   TSM), the region average and how many are listed now, the 60, 14 and 3-day averages and the
@@ -59,10 +72,15 @@ turns this off.
 
 ### 2. Meionomics
 
-**Simple way:** download `Meionomics-<version>.zip` from
-[Releases](https://github.com/MeioNeiz/Meionomics/releases) and extract it into
-`World of Warcraft\_forever_\Interface\AddOns`, so that you end up with
-`AddOns\Meionomics\Meionomics.toc`. Restart WoW fully (a `/reload` doesn't find new addons).
+**Simple way:**
+
+1. Open the [latest release](https://github.com/MeioNeiz/Meionomics/releases/latest) and
+   click `Meionomics-v<version>-forever.zip` under **Assets** to download it.
+2. Extract it into `World of Warcraft\_forever_\Interface\AddOns`, so that you end up with
+   `AddOns\Meionomics\Meionomics.toc` (not `AddOns\Meionomics\Meionomics\...`).
+3. Restart WoW fully (a `/reload` doesn't find new addons).
+
+To update, do the same again: extracting over the old folder keeps your settings.
 
 **With the TSM fixes (recommended if you use TSM):** the installer below copies Meionomics
 into your AddOns folder and applies small fixes to TSM for WoW Forever (see
@@ -97,7 +115,8 @@ repository. To undo one fix: `pwsh -ExecutionPolicy Bypass -File mods.ps1 revert
 - `/meio find` opens the Find view.
 - `/meio history <item>` opens the price history anywhere; `/meio history off` turns the
   panel off.
-- `/meio options` chooses what item tooltips show; `/meio` lists the other commands.
+- `/meio options` chooses what item tooltips show; `/meio tooltips off` leaves tooltips
+  alone. `/meio` lists the other commands.
 
 Click a row to queue it, right-click to remove one, Ctrl-click to type a count, Alt-click
 to search the AH for it (or get its Wowhead link).
@@ -113,7 +132,6 @@ which mobs drop it; without it some patterns show "source unknown").
 |---|---|
 | 10-tsm-chat-tab-dropdown | Settings > General crashed when the saved chat tab was blank |
 | 11-tsm-alt-realm-tooltip | Settings > Tooltip crashed on alt realm lines |
-| 12-tsm-enchanting-scan | TSM's Enchanting crafting window stayed empty and its Craft button crashed: TSM looks for retail enchanting scrolls that WoW Forever doesn't have |
 | 13-tsm-always-compare | TSM item tooltips compare with your equipped gear without holding Shift |
 | 15-apphelper-without-tsm | TSM's AppHelper loads without TSM, so Meionomics can read the desktop app's prices on its own |
 | 16-tsm-auction-selected-hook | Lets Meionomics know which result you clicked in TSM's auction window (for the price history panel) |

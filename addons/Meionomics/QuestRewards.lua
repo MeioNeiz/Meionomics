@@ -15,14 +15,16 @@ local pending = {}
 
 local function ItemID(link) return link and tonumber(link:match("item:(%d+)")) end
 
--- itemID, count of choice i in the panel QuestInfo_Display just filled
+-- itemID, count, link (its random suffix) of choice i in the panel QuestInfo_Display just filled
 local function Choice(i)
   if QuestInfoFrame.questLog then
     local _, _, count, _, _, id = GetQuestLogChoiceInfo(i)
-    return id or ItemID(GetQuestLogItemLink("choice", i)), count
+    local link = GetQuestLogItemLink("choice", i)
+    return id or ItemID(link), count, link
   end
   local _, _, count = GetQuestItemInfo("choice", i)
-  return ItemID(GetQuestItemLink("choice", i)), count
+  local link = GetQuestItemLink("choice", i)
+  return ItemID(link), count, link
 end
 
 local function NumChoices()
@@ -98,9 +100,9 @@ function Q.Update()
 
   local choices, money, best = {}, nil, nil
   for i = 1, n do
-    local id, count = Choice(i)
+    local id, count, link = Choice(i)
     local bind = id and select(14, C_Item.GetItemInfo(id))
-    local act = id and P.BestAction(id, bind == 1)
+    local act = id and P.BestAction(id, bind == 1, link)
     if id and not act then pending[id] = true end
     local c = { id = id, count = count or 1, act = act,
       button = rewards.RewardButtons and rewards.RewardButtons[i] }

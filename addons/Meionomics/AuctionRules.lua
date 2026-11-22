@@ -2,7 +2,9 @@
 -- Rules are small price expressions over our sources:
 --   120% market | max(105% craft, vendor / 0.95, 80% market) | 1g50s | first(ownMarket, market)
 -- sources: market, minBuyout, regionMarket, regionSale, historical, vendor, craft (cost to make one
--- with a recipe someone knows), ownMin, ownMarket (our scans only)
+-- with a recipe someone knows), ownMin, ownMarket (our scans only), sellDay (SellDay.lua)
+-- With a rival up, the post goes at SellDay's price (best net that sells within a day 4 in 5)
+-- when it clears the floor, else the plain undercut.
 local _, M = ...
 local Q = {}
 M.AuctionRules = Q
@@ -126,10 +128,14 @@ end
 
 local SOURCE_NAMES = { craft = "craft cost", minBuyout = "min buyout",
   regionMarket = "region market", regionSale = "region sale avg", ownMin = "our min buyout",
-  ownMarket = "our market" }
+  ownMarket = "our market", sellDay = "sells in a day" }
 
 local function Source(name, itemID)
   if name == "craft" then return (Q.CraftCost(itemID)) end
+  if name == "sellDay" then
+    local sd = M.SellDay.Quote(itemID)
+    return sd and sd.price
+  end
   if name == "ownMin" or name == "ownMarket" then
     local a = M.Auction.Get(itemID)
     return a and (name == "ownMin" and a.min or a.market) or nil
@@ -199,8 +205,16 @@ function Q.Rule(itemID)
   return r
 end
 
+-- "cheapest 55s is a dip (3 from 1 seller), sells within a day ~4 in 5 at 2% under 57s
+-- (default guess)"
+function Q.SellDayWhy(sd)
+  local under = sd.m == 0 and "1c" or ("%d%%"):format(sd.m * 100 + 0.5)
+  return ("%ssells within a day ~%s at %s under %s (%s)"):format(M.SellDay.DipText(sd),
+    M.SellDay.Odds(sd.P), under, M.Money(sd.ref), M.SellDay.Basis(sd.fit))
+end
+
 -- { action = "post" | "hold" | "vendor" | "cannot", price, rule, reason, lowest, mine,
---   floor, normal, ceiling }
+--   floor, normal, ceiling, sellDay (SellDay.Quote) }
 -- opts: lowest / mine (live search, else our last scan), deposit (copper for this post)
 function Q.Quote(itemID, opts)
   opts = opts or {}
@@ -240,21 +254,35 @@ function Q.Quote(itemID, opts)
       M.Money(q.lowest), ceilWhy, nWhy))
   elseif q.mine and q.mine <= q.lowest then
     Set("post", math.max(q.mine, q.floor), "match", "lowest is ours at " .. M.Money(q.mine))
-  elseif q.lowest - rule.undercut < q.floor then
-    Set("hold", nil, "floor", ("competition %s under floor %s (%s)"):format(
-      M.Money(q.lowest), M.Money(q.floor), floorWhy))
   else
-    Set("post", q.lowest - rule.undercut, "undercut",
-      ("%s under %s"):format(M.Money(rule.undercut), M.Money(q.lowest)))
+    local sd = M.SellDay.Quote(itemID, { comp = q.lowest, deposit = opts.deposit,
+      floor = q.floor })
+    q.sellDay = sd
+    if sd and sd.price then
+      Set("post", sd.price, "in a day", Q.SellDayWhy(sd))
+    elseif q.lowest - rule.undercut < q.floor then
+      Set("hold", nil, "floor", ("competition %s under floor %s (%s)"):format(
+        M.Money(q.lowest), M.Money(q.floor), floorWhy))
+    else
+      Set("post", q.lowest - rule.undercut, "undercut",
+        ("%s under %s"):format(M.Money(rule.undercut), M.Money(q.lowest))
+        .. (sd and sd.slow and ", slow: not 4 in 5 within a day even 12% under" or ""))
+    end
   end
-  -- not worth the AH when a vendor pays more than the sale nets
+  -- not worth the AH when a vendor pays more than the sale nets. The deposit comes back on a
+  -- sale, so it only costs on expiries: SellDay's net prices that in when it has odds, else
+  -- a sale nets the price less the cut (rounded, so a floor of vendor / 0.95 isn't a copper short)
   local vendor = M.Prices.Get(itemID, "vendor")
   local price = q.price or q.floor
-  local net = price * AH_CUT - (opts.deposit or 0)
+  local net, how = price * AH_CUT, "after the 5% cut"
+  if q.sellDay then
+    net, how = M.SellDay.Net(q.sellDay, price).v, "after the cut and deposits lost on expiries"
+  end
+  net = math.floor(net + 0.5)
   if vendor and net < vendor then
     q.vendorFrom = q.rule
-    Set("vendor", vendor, "vendor", ("vendor %s pays more than %s after cut and deposit"):format(
-      M.Money(vendor), M.Money(net)))
+    Set("vendor", vendor, "vendor", ("vendor pays %s, more than the %s an AH sale nets %s")
+      :format(M.Money(vendor), M.Money(net), how))
   end
   return q
 end

@@ -6,6 +6,7 @@ LocalMods manager: keeps local WoW addon changes in place across addon updates.
   pwsh -File mods.ps1 status     check only, change nothing
   pwsh -File mods.ps1 revert <patch-name>   undo one patch (its NEW back to OLD)
 
+-Only A,B limits apply to those overlay addons / patch names; the rest are only checked.
 -AddOns <path> points any of them at another install. Without it: _forever_\Interface\AddOns
 beside this folder when it sits in the WoW folder, else the standard install
 C:\Program Files (x86)\World of Warcraft\_forever_\Interface\AddOns.
@@ -23,9 +24,13 @@ param(
     [ValidateSet('apply', 'status', 'revert')][string]$Command = 'apply',
     [string]$Name,
     [string]$AddOns = (Join-Path $PSScriptRoot '..\_forever_\Interface\AddOns'),
-    [switch]$Coordinator
+    [switch]$Coordinator,
+    [string[]]$Only
 )
 $ErrorActionPreference = 'Stop'
+# pwsh -File passes "a,b" as one string
+$Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+function Skip-Item([string]$n) { $Only.Count -and $n -notin $Only }
 $lockPath = Join-Path $PSScriptRoot 'deploy.lock'
 if ($Command -ne 'status' -and -not $Coordinator -and (Test-Path $lockPath)) {
     Write-Host "LOCKED: $((Get-Content -Raw $lockPath).Trim())"
@@ -195,7 +200,7 @@ foreach ($src in Get-ChildItem (Join-Path $Root 'addons') -Directory -ErrorActio
     }
     $missing = -not (Test-Path $dest)
     if ($changed.Count -eq 0) { Say "- $($src.Name): installed, up to date"; continue }
-    if ($checkOnly) { Say "- $($src.Name): $($missing ? 'NOT INSTALLED' : "out of date ($($changed -join ', '))")"; continue }
+    if ($checkOnly -or (Skip-Item $src.Name)) { Say "- $($src.Name): $($missing ? 'NOT INSTALLED' : "out of date ($($changed -join ', '))")"; continue }
     foreach ($rel in $changed) {
         $d = Join-Path $dest $rel
         New-Item -ItemType Directory -Force (Split-Path $d) | Out-Null
@@ -203,6 +208,37 @@ foreach ($src in Get-ChildItem (Join-Path $Root 'addons') -Directory -ErrorActio
     }
     if ($missing) { $newAddon = $true }
     Say "- $($src.Name): $($missing ? 'INSTALLED (new)' : "updated ($($changed -join ', '))")"
+}
+
+# ---------------------------------------------------------------- retired addons
+# Old folders the game keeps loading: KafStats still claims /stats and KafStatsCharDB.
+# Report only: deleting is the player's call (it may hold SavedVariables they want).
+$retired = [ordered]@{
+    KafStats = 'renamed MeioStats; fights it over /stats and KafStatsCharDB'
+    CraftProfit = 'folded into Meionomics'
+    BaganatorPawn = 'Forever Leveling BiS draws its own Baganator arrows'
+    PawnForever = 'replaced by Forever Leveling BiS scores (TooltipFold, Meionomics)'
+    LeaveButton = 'renamed NextStop; would show a second button'
+    SpellDPS = 'renamed MeioDPS'
+    WandBar = 'renamed MeioPlates'
+    PetAlert = 'renamed MeioPets'
+    MapPlus = 'renamed MeioMap'
+    AltView = 'renamed MeioAlts'
+    FlightTimes = 'renamed MeioFlightTimes; would time flights twice'
+    BlizzFixes = 'renamed MeioFixes; would apply the same fixes twice'
+}
+$wtf = Join-Path $AddOns '..\..\WTF\Account'
+$retiredFound = @($retired.Keys | Where-Object { Test-Path -LiteralPath (Join-Path $AddOns $_) })
+if ($retiredFound) {
+    Say ''
+    Say '## Retired addons still installed'
+    foreach ($name in $retiredFound) {
+        $on = @(Get-ChildItem $wtf -Recurse -Filter AddOns.txt -ErrorAction SilentlyContinue |
+            Where-Object { Select-String -LiteralPath $_.FullName -Pattern "^$name\s*:\s*enabled" -Quiet } |
+            ForEach-Object { $_.Directory.Name })
+        $where = $on ? "enabled for $($on -join ', ')" : 'disabled'
+        Say "- **RETIRED** $name ($($retired[$name])), $where. Disable it in the AddOns list or delete $AddOns\$name."
+    }
 }
 
 # ---------------------------------------------------------------- patches
@@ -254,7 +290,7 @@ foreach ($pf in $patchFiles) {
     }
     $todo = @($states | Where-Object { $_ -ne 'applied' }).Count
     if ($todo -eq 0) { Say "- ok $label$(($Command -eq 'revert') ? ' (already reverted)' : '')"; continue }
-    if ($checkOnly) { Say "- NEEDS APPLYING $label$($notes ? " ($($notes -join '; '))" : '')"; continue }
+    if ($checkOnly -or (Skip-Item $p.Name)) { Say "- NEEDS APPLYING $label$($notes ? " ($($notes -join '; '))" : '')"; continue }
     foreach ($path in $texts.Keys) {
         if ($texts[$path] -ne $files[$path].Text) { Write-Text $path $files[$path] $texts[$path] }
     }

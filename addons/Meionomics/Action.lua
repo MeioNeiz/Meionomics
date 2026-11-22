@@ -1,7 +1,7 @@
 -- The one thing to do with an item, the same wording, place and colours on every tooltip and
 -- list (item tooltips, AH browse, craft hover). Callers render it with A.Line / A.Rows, never
 -- their own variant.
---   P.BestAction(itemID, bound) -> act or nil (item data not loaded)
+--   P.BestAction(itemID, bound[, link]) -> act or nil (item data not loaded)
 --     act.verb    equip | learn | known | use | keep | craft | ah | vendor | disenchant | none
 --     act.value   copper each for selling verbs (craft: what one is worth crafted)
 --     act.reason  short why, or nil
@@ -19,10 +19,10 @@ local A = {}
 M.Action = A
 
 A.VERBS = {
-  equip = { "Equip", "3fd0ff" }, learn = { "Learn", "6f8dff" }, use = { "Use", "ffd24d" },
-  keep = { "Keep", "ffd24d" }, craft = { "Craft into", "ffa64d" }, ah = { "AH", "4fe36a" },
+  equip = { "Equip", "3fd0ff" }, learn = { "Learn", "8fa8ff" }, use = { "Use", "ffd24d" },
+  keep = { "Keep", "ffd24d" }, craft = { "Craft into", "ffffff" }, ah = { "AH", "4fe36a" },
   vendor = { "Vendor", "c8c8c8" }, disenchant = { "Disenchant", "b073ff" },
-  known = { "Known", "8a8a8a" }, none = { "No AH data", "8a8a8a" },
+  known = { "Known", "a8a8a8" }, none = { "No AH data", "a8a8a8" },
 }
 A.LABEL = "ffd100"
 -- The verdict is to be seen, not read: Blizzard's own art, one per verb. Vendor (a sack, square)
@@ -44,7 +44,7 @@ A.ICONS = {
 local UNSURE = "|TInterface\\RaidFrame\\ReadyCheck-Waiting:0|t"
 local MARK = "|TInterface\\ChatFrame\\ChatFrameExpandArrow:0|t"
 local CRAFT_NAME = 20
-local GOOD, FADED = "4fe36a", "6f6f6f"
+local GOOD, FADED = "4fe36a", "d0d0d0"
 -- locked boxes a vendor pays for (ItemSparse LockID, SellPrice > 0); rogues buy them on the AH to
 -- level lockpicking. Junkboxes are locked too but vendors won't take them.
 local LOCKBOX = { [4632] = true, [4633] = true, [4634] = true, [4636] = true, [4637] = true,
@@ -56,11 +56,11 @@ local SELLS = { vendor = true, ah = true, disenchant = true, craft = true }
 local CLOSE = 0.85
 
 local function Hex(hex, text) return "|cff" .. hex .. text .. "|r" end
-local function Dim(text) return Hex("8a8a8a", text) end
+local function Dim(text) return Hex("a8a8a8", text) end
 
 ------------------------------------------------------------------------------ Selling
 -- the best known recipe using it, by profit: its value per unit of this item is the item's own
--- price plus the recipe's profit shared over the units it takes
+-- price plus the recipe's profit shared over the units it takes (also returned: that share)
 local function CraftUse(itemID)
   local best, bestE
   for _, rec in ipairs(R.UsedIn(itemID) or {}) do
@@ -74,12 +74,15 @@ local function CraftUse(itemID)
   if not best then return nil end
   local price = R.MatPrice(itemID)
   for _, m in ipairs(best.mats) do
-    if m[1] == itemID and price then return price + bestE.profit / m[2], best end
+    if m[1] == itemID and price then
+      return price + bestE.profit / m[2], best, bestE.profit / m[2]
+    end
   end
 end
 
 -- P.SaleOptions plus: the AH only ever at the safe price (and not counted when confidence is
--- low: no guesses), crafting it
+-- low: no guesses, unless only the prices disagree, which the safe price allows for),
+-- crafting it
 function A.Sale(itemID, bound)
   local s = P.SaleOptions(itemID, bound)
   local ok = P.Auctionable(itemID)
@@ -89,8 +92,12 @@ function A.Sale(itemID, bound)
     s.ah = math.min(s.ah, math.floor(ev.price * (1 - P.AH_CUT) + 0.5))
     s.safe = ev.level ~= "high"
   end
-  if s.ah and ev and ev.level == "low" and not s.why.ah then s.why.ah = "price unsure" end
-  s.craft, s.rec = CraftUse(itemID)
+  if s.ah and ev and ev.level == "low" and not ev.spreadOnly and not s.why.ah then
+    s.why.ah = "price unsure"
+  end
+  local share
+  s.craft, s.rec, share = CraftUse(P.Id(itemID))
+  local alt, altK
   for _, k in ipairs(SELL) do
     local v = s[k]
     if v and v > 0 and not s.why[k] then
@@ -99,7 +106,13 @@ function A.Sale(itemID, bound)
       elseif not s.runner or v > s[s.runner] then
         s.runner = k
       end
+      if k ~= "craft" and (not alt or v > alt) then alt, altK = v, k end
     end
+  end
+  -- what crafting adds per unit over the best other way to sell it (else over its mat price)
+  if s.craft then
+    s.gain = alt and (s.craft - alt) or share
+    s.gainVs = altK or "mats"
   end
   return s
 end
@@ -127,12 +140,17 @@ local function Flip(itemID, vendor)
   if gain then return { each = gain } end
 end
 
-local function Upgrade(itemID)
-  local pf = _G.PawnForever
-  local link = select(2, C_Item.GetItemInfo(itemID))
-  if not (pf and pf.ready and pf.Upgrades and link) then return false end
-  local ok, verdict = pcall(pf.Upgrades.Check, pf.Upgrades, link)
-  return ok and type(verdict) == "table" and verdict.upgrade and true or false
+local BIS_UPGRADE = 0.05 -- Forever Leveling BiS's least gain it calls an upgrade
+
+-- link: the item as shown, so a random suffix's stats count (the bare itemID has none)
+local function Upgrade(itemID, link)
+  local api = ForeverLevelingBiS_API
+  if not (type(link) == "string" and tonumber(link:match("item:(%d+)")) == itemID) then
+    link = select(2, C_Item.GetItemInfo(itemID))
+  end
+  if not (api and (api.version or 1) >= 2 and link) then return nil end
+  local ok, gain = pcall(api.GetGain, link)
+  return ok and type(gain) == "number" and gain >= BIS_UPGRADE and gain or nil
 end
 
 local function LearnVerb(rec)
@@ -168,12 +186,15 @@ local function SellReason(s)
   if m == "craft" then return nil end
 end
 
-function P.BestAction(itemID, bound)
+-- key: an itemID or a variant key (P.Id): the sale is priced by it, the rest goes by the itemID.
+-- link: the item as shown (suffix, enchant), for the upgrade check; else the variant's own
+function P.BestAction(key, bound, link)
+  local itemID = P.Id(key)
   local _, _, quality, _, minLevel, _, _, _, _, _, _, classID = C_Item.GetItemInfo(itemID)
   if not quality then return nil end
-  local s = A.Sale(itemID, bound)
+  local s = A.Sale(key, bound)
   local act = { id = itemID, sale = s, ev = s.ev, rec = s.method == "craft" and s.rec or nil,
-    flip = not bound and Flip(itemID, s.vendor) or nil }
+    flip = not bound and Flip(key, s.vendor) or nil }
   local function Sell()
     if s.method then
       act.verb, act.value, act.reason = s.method, s.value, SellReason(s)
@@ -203,7 +224,9 @@ function P.BestAction(itemID, bound)
   if classID == 12 then Hold("keep", "quest item") return act end
   if classID == 13 then Hold("keep", "key") return act end
   if classID == 2 or classID == 4 then
-    if Upgrade(itemID) then Hold("equip", "upgrade") else Sell() end
+    if not link and M.Auction and M.Auction.IsVariant(key) then link = M.Auction.Link(key) end
+    local gain = Upgrade(itemID, link)
+    if gain then Hold("equip", ("%+.1f upgrade"):format(gain)) else Sell() end
     return act
   end
   -- the AH whenever it has a price, low confidence or not: vendors pay pennies for them
@@ -238,15 +261,41 @@ local function Icon(verb, rec)
   return A.ICONS[verb] and (A.ICONS[verb] .. " ") or ""
 end
 
+-- a craft's recipe name in its difficulty colour at your rank, like the profession window
+local function CraftName(rec, name)
+  local C = M.Craft
+  local hex = C and C.DiffHex and C.DiffHex(rec) or A.VERBS.craft[2]
+  return Hex(hex, name or rec.name or "?")
+end
+
 local function VerbText(verb, rec)
   local v = A.VERBS[verb]
-  local text = v[1] .. (verb == "craft" and rec and (" " .. (rec.name or "?")) or "")
-  return Icon(verb, rec) .. Hex(v[2], text)
+  if verb == "craft" and rec then
+    return Icon(verb, rec) .. Hex(v[2], v[1] .. " ") .. CraftName(rec)
+  end
+  return Icon(verb, rec) .. Hex(v[2], v[1])
 end
 
 local function Value(verb, value)
   if not value then return nil end
   return (verb == "vendor" and "" or "~") .. M.Money(value)
+end
+
+local BAD = "ff5a5a"
+local GAIN_VS = { ah = "AH", vendor = "vendor", disenchant = "disenchanting", mats = "mat price" }
+
+-- a craft's worth is what it gains over selling the item, not what the made item fetches
+local function Gain(s, n)
+  local g = s and s.gain
+  if not g then return nil end
+  g = g * (n or 1)
+  if g >= 0 then return Hex(GOOD, "+") .. M.Money(g, GOOD) end
+  return Hex(BAD, "-") .. M.Money(-g, BAD)
+end
+
+local function Worth(act, verb, value, n)
+  if verb == "craft" then return Gain(act.sale, n) end
+  return Value(verb, value and value * (n or 1))
 end
 
 -- opts.label replaces "Best: "; opts.count: values are for that many; opts.reason: the why (Shift
@@ -262,16 +311,17 @@ function A.Line(act, opts)
   if r and opts.prices and (r[1] == "vendor" or r[1] == "ah") then r = nil end
   if r and r[2] and (hold or (act.value and r[2] >= act.value * CLOSE)) then
     local name = r[1] == "craft" and "craft" or A.VERBS[r[1]][1]
-    left = left .. Dim(" (" .. (hold and "sell: " or "") .. name .. " ") .. Value(r[1], r[2] * n)
-      .. Dim(")")
+    left = left .. Dim(" (" .. (hold and "sell: " or "") .. name .. " ")
+      .. Worth(act, r[1], r[2], n) .. Dim(")")
   end
-  return left, Value(act.verb, act.value and act.value * n)
+  return left, Worth(act, act.verb, act.value, n)
 end
 
 -- "[bag] 16c   [coins] 21c", this order: icons, no words ("if we have icons do we need
 -- text"). The winner green behind a gold arrow, the other faded; opts.faded: both faded, no
--- arrow (Best is something else). AH is only ever the safe price after the cut (A.Sale): a gold
--- ? when confidence is low or it doesn't sell, a grey one with no AH data, left out when it
+-- arrow (Best is something else). AH is only ever the safe price after the cut (A.Sale): faded
+-- with a gold ? when confidence is low or it doesn't sell, a grey ? with no AH data, left
+-- out when it
 -- can't be auctioned. "Can't sell" when neither takes it. opts.count: for that many;
 -- opts.after: appended to the AH value; opts.under: nil when only a vendor takes it and Best
 -- is Vendor (the A.Line above already gives the price)
@@ -285,7 +335,7 @@ function A.PriceLine(act, opts)
   local win = not opts.faded and (SELLS[act.verb] and act.verb or s.method)
   local function Part(k, v)
     local icon = A.ICONS[k]
-    if k ~= win then return icon .. " " .. M.Money(v * n, FADED, FADED) end
+    if k ~= win then return icon .. " " .. M.Money(v * n, FADED) end
     return MARK .. icon .. " " .. M.Money(v * n, GOOD)
   end
   local parts = {}
@@ -294,7 +344,10 @@ function A.PriceLine(act, opts)
   elseif not ev then
     parts[#parts + 1] = A.ICONS.ah .. " " .. A.ICONS.none
   elseif s.why.ah or not s.ah then
-    parts[#parts + 1] = A.ICONS.ah .. " " .. UNSURE
+    -- on a small region most items sell slowly: a bare ? hid the price on nearly every tooltip
+    local price = s.ah and (M.Money(s.ah * n, FADED) .. " ") or ""
+    parts[#parts + 1] = A.ICONS.ah .. " " .. price .. UNSURE
+      .. (opts.after and (" " .. opts.after) or "")
   else
     parts[#parts + 1] = Part("ah", s.ah) .. (opts.after and (" " .. opts.after) or "")
   end
@@ -317,9 +370,9 @@ function A.Compact(act, opts)
   if verb == "craft" and act.rec then
     local name = act.rec.name or "?"
     if #name > CRAFT_NAME then name = name:sub(1, CRAFT_NAME - 1) .. "..." end
-    what = Hex(v[2], name)
+    what = CraftName(act.rec, name)
   end
-  local value = Value(verb, act.value)
+  local value = Worth(act, verb, act.value)
   local text = Icon(verb, act.rec) .. (what and (what .. (value and " " or "")) or "")
     .. (value or (what and "" or Hex(v[2], v[1])))
   return { { text }, { A.PriceLine(act, { faded = true, after = opts.after }) } }
@@ -344,12 +397,14 @@ function A.Rows(rows, act, label)
     local why = s.why[k]
     if s[k] or why then
       local name = ({ vendor = "Vendor", ah = "AH after cut", disenchant = "Disenchant",
-        craft = "Craft into " .. (s.rec and s.rec.name or "?") })[k]
+        craft = "Craft into " })[k]
       if k == act.verb then name = Hex(A.VERBS[k][2], name) end
+      if k == "craft" then name = name .. (s.rec and CraftName(s.rec) or "?") end
       local notes = k == "ah" and s.safe and "safe price" or nil
+      if k == "craft" and s.gainVs then notes = "vs " .. GAIN_VS[s.gainVs] end
       if why then notes = notes and (notes .. ", " .. why) or why end
       if notes then name = name .. Dim(" (" .. notes .. ")") end
-      Add("row", "  " .. name, Value(k, s[k]))
+      Add("row", "  " .. name, Worth(act, k, s[k]))
     end
   end
   local flip = A.FlipLine(act)

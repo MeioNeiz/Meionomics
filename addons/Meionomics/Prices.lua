@@ -3,7 +3,8 @@
 -- TradeSkillMaster_AppHelper\AppData.lua is read directly: AppHelper hands each block to the global
 -- TSM_APPHELPER_LOAD_DATA, which TSM defines and we define when TSM is absent.
 -- AppHelper declares a dependency on TSM; patch 15 makes it optional so this works without TSM.
--- Without TSM our own AH scans (Auction.lua) are merged in and take over as they build up.
+-- Our own AH scans and searches (Auction.lua) are merged in either way: the current AH from
+-- whichever is newer, market taking over as days of our data build up.
 local _, M = ...
 local P = {}
 M.Prices = P
@@ -22,6 +23,17 @@ local SOURCES = {
   saleRate = { "DBRegionSaleRate", "regionSalePercent", "rate" },
 }
 P.SOURCES = SOURCES
+
+-- Price lookups take an itemID or a random-suffix variant key "itemID:bonusIDs" (Auction.lua
+-- A.Key). TSM and its app data only price the itemID, whatever the suffix ("of Shadow Wrath"
+-- 17s vs over 1g), so a variant's AH prices are our own sightings of it alone; its region sales
+-- rates are the itemID's, the nearest there is.
+local function Id(key)
+  if type(key) == "string" then return tonumber(key:match("^(%d+)")) end
+  return key
+end
+P.Id = Id
+local function Variant(key) return type(key) == "string" end
 
 local function TSMReady()
   return type(TSM_API) == "table" and TSM_API.GetCustomPriceValue ~= nil
@@ -47,8 +59,24 @@ end
 -- any TSM custom price string; nil without TSM
 function P.Custom(str, itemID)
   if not (itemID and P.Valid(str)) then return nil end
-  local ok, v = pcall(TSM_API.GetCustomPriceValue, str, "i:" .. itemID)
+  local ok, v = pcall(TSM_API.GetCustomPriceValue, str, "i:" .. Id(itemID))
   return (ok and type(v) == "number" and v > 0) and v or nil
+end
+
+-- what a vendor charges for one: TSM's VendorBuy, else the cheapest unlimited stock seen at our
+-- merchant visits (Recipes.lua records mats and patterns); limited stock is never a price to
+-- count on. TSM only knows vendors it has seen too, so ours fills its gaps.
+function P.VendorBuy(itemID)
+  if not itemID then return nil end
+  local tsm = P.Custom("VendorBuy", itemID)
+  if tsm then return tsm end
+  local best
+  for _, v in pairs(M.Recipes and M.Recipes.Vendors(itemID) or {}) do
+    if not v.limited and v.price and v.price > 0 and (not best or v.price < best) then
+      best = v.price
+    end
+  end
+  return best
 end
 
 -- cheapest way to get the item by converting others (essences, milling, prospecting), at
@@ -69,11 +97,29 @@ end
 -- Decoded lazily per item, as TSM does: most of the 50k rows are never looked at.
 local blocks = {}
 
+-- TSM names a WoW Forever realm by its ruleset ("PvP-Alliance"), not GetRealmName()
+local function RulesetRealm()
+  local rules, E = C_GameRules, Enum and Enum.GameRule
+  if not (rules and rules.IsGameRuleActive and E and E.PvPRuleset) then return nil end
+  local function On(rule) return rule ~= nil and rules.IsGameRuleActive(rule) end
+  if On(E.HardcoreRuleset) then return "Hardcore" end
+  local rp, pvp = On(E.RPRuleset), On(E.PvPRuleset)
+  if rp and pvp then return "Roleplay PvP" end
+  if rp then return "Roleplay" end
+  return pvp and "PvP" or "Normal"
+end
+
+local function Plain(s) return s:gsub("%s+", ""):lower() end
+
 local function IsMine(tag, where)
   if tag:find("^AUCTIONDB_REGION_") or tag:find("^AUCTIONDB_COMMODITY_") then
     return where:match("%-(%a+)$") == (GetCurrentRegionName and GetCurrentRegionName())
   end
-  return where == GetRealmName() .. "-" .. UnitFactionGroup("player")
+  local faction = "-" .. (UnitFactionGroup("player") or "")
+  for _, realm in ipairs({ M.Realm() or "", RulesetRealm() }) do
+    if Plain(where) == Plain(realm .. faction) then return true end
+  end
+  return false
 end
 
 -- when the app data was downloaded: realm (this realm-faction) and region
@@ -149,19 +195,44 @@ else
 end
 
 ------------------------------------------------------------------------------ Lookup
+-- the client's sell price, known only once the item is cached: until then TSM's (kept across
+-- sessions), and the item is asked for; caches are redone when it arrives, since prices and
+-- verdicts worked out without a vendor price were kept
+local waiting = {}
 local function Vendor(itemID)
   local sell = select(11, C_Item.GetItemInfo(itemID))
+  if sell == nil then
+    if not waiting[itemID] and C_Item.RequestLoadItemDataByID then
+      waiting[itemID] = true
+      C_Item.RequestLoadItemDataByID(itemID)
+    end
+    sell = P.Custom("VendorSell", itemID)
+  end
   return (sell and sell > 0) and sell or nil
 end
 
--- Our scans: the current AH from whichever scan is newer; market blended in by days of our own
--- data, taking over fully after OWN_DAYS
+local redo
+M.On("GET_ITEM_INFO_RECEIVED", function(_, itemID, ok)
+  if not waiting[itemID] then return end
+  waiting[itemID] = nil
+  if redo or not ok then return end
+  redo = true
+  C_Timer.After(0.2, function()
+    redo = nil
+    if M.Recipes then M.Recipes.ResetCache() end
+    if M.CraftUI then M.CraftUI.RefreshSoon() end
+  end)
+end)
+
+-- Our scans and AH searches: the current AH from whichever is newer; market blended in by days
+-- of our own data, taking over fully after OWN_DAYS. With TSM loaded its app data is read by
+-- TSM, so only the download time (NoteTime) is known.
 local OWN_DAYS = 7
 local function Merge(what, v, field, itemID)
   local own = M.Auction and M.Auction.Get(itemID)
   if not own then return v end
   if what == "minBuyout" or what == "numAuctions" then
-    if own.t and own.t >= (AppTime(field) or 0) then
+    if own.t and own.t >= (AppTime(field) or dataTime.realm or 0) then
       if what == "minBuyout" then return own.min end
       return (own.n or 0) > 0 and own.n or nil
     end
@@ -172,11 +243,45 @@ local function Merge(what, v, field, itemID)
   return v
 end
 
+-- our record when it is the newest realm data there is (a variant's always is) or nil
+local function Newest(itemID)
+  local own = M.Auction and M.Auction.Get(itemID)
+  if own and own.t and (Variant(itemID) or own.t >= (dataTime.realm or 0)) then return own end
+end
+
+-- what's up now as we saw it (a scan or any AH search), if within LIVE_FOR and newer than
+-- TSM's data -> Auction.Get's record plus age; nil otherwise
+P.LIVE_FOR = 6 * 3600
+function P.Live(itemID)
+  local own = Newest(itemID)
+  if not own then return nil end
+  own.age = M.Now() - own.t
+  if own.age <= P.LIVE_FOR then return own end
+end
+
+-- the cheapest listing in the newest data, however old (P.Age says how old): our sighting's
+-- cheapest rival when at least as new as TSM's realm data, else TSM's min buyout
+function P.Current(itemID)
+  local own = Newest(itemID)
+  if own then return own.comp end
+  return P.Get(itemID, "minBuyout")
+end
+
+-- how old the item's realm AH price is -> seconds, and true when it's our own sighting rather
+-- than TSM's app data; nil when neither has a time
+function P.Age(itemID)
+  local own = Newest(itemID)
+  if own then return M.Now() - own.t, true end
+  if Variant(itemID) then return nil end
+  local t = dataTime.realm
+  if t then return M.Now() - t, false end
+end
+
 -- the AH takes unbound, bind-on-equip and bind-on-use items; true, or false and why not
 local AUCTIONABLE = { [0] = true, [2] = true, [3] = true }
 local NOT_WHY = { [1] = "soulbound", [4] = "quest item" }
 function P.Auctionable(itemID)
-  local bind = select(14, C_Item.GetItemInfo(itemID))
+  local bind = select(14, C_Item.GetItemInfo(Id(itemID)))
   if bind == nil or AUCTIONABLE[bind] then return true end
   return false, NOT_WHY[bind] or "account-bound"
 end
@@ -184,17 +289,25 @@ end
 -- P.Get(itemID, "market") etc (keys of SOURCES), or "vendor"
 function P.Get(itemID, what)
   if not itemID then return nil end
-  if what == "vendor" then return Vendor(itemID) end
+  if what == "vendor" then return Vendor(Id(itemID)) end
   local s = SOURCES[what]
+  if Variant(itemID) and s[3] ~= "rate" then
+    local own = M.Auction and M.Auction.Get(itemID)
+    if not own then return nil end
+    if what == "minBuyout" then return own.min end
+    if what == "numAuctions" then return (own.n or 0) > 0 and own.n or nil end
+    if what == "market" then return own.market end
+    return nil
+  end
   if TSMReady() then
     -- TSM rounds every value to a whole number: rates are asked for x1000 (as TSM's tooltip does)
     if s[3] == "rate" then
       local v = P.Custom(s[1] .. " * 1000", itemID)
       return v and v / 1000
     end
-    return P.Custom(s[1], itemID)
+    return Merge(what, P.Custom(s[1], itemID), s[2], itemID)
   end
-  local v = AppValue(s[2], itemID)
+  local v = AppValue(s[2], Id(itemID))
   if v and s[3] == "rate" then return v / 1000 end
   return Merge(what, v, s[2], itemID)
 end
@@ -225,7 +338,8 @@ function P.SellRate(itemID)
   local own = A and A.Get(itemID)
   -- an item missing from a newer scan had none up then
   local t = own and own.t and own.t >= (scan or 0) and own.t or scan
-  local newest = t and not TSMReady() and t >= (AppTime(SOURCES.numAuctions[2]) or 0)
+  local newest = t and (Variant(itemID) or not TSMReady()
+    and t >= (AppTime(SOURCES.numAuctions[2]) or 0))
   if t and (now - t <= LISTED_FRESH or newest) then
     local up = own and own.t == t
     s.listed, s.auctions = up and own.qty or 0, up and own.n or 0
@@ -367,7 +481,7 @@ end
 
 -- Enchanting needed: vanilla's 5-level bands, 225 from ilvl 61 (TSM's data has one band 61-99)
 function P.DisenchantSkill(itemID)
-  local ilvl = select(4, C_Item.GetItemInfo(itemID))
+  local ilvl = select(4, C_Item.GetItemInfo(Id(itemID)))
   if not ilvl then return nil end
   return ilvl <= 20 and 1 or math.min(225, 25 * math.ceil((ilvl - 20) / 5))
 end
@@ -375,7 +489,7 @@ end
 -- average value of what it disenchants into, mats at P.AHValue (dust and essences sell, so no
 -- P.Sells check); nil when it can't be disenchanted or no mat has a price
 function P.Disenchant(itemID)
-  local _, _, quality, ilvl, _, _, _, _, _, _, _, classID = C_Item.GetItemInfo(itemID)
+  local _, _, quality, ilvl, _, _, _, _, _, _, _, classID = C_Item.GetItemInfo(Id(itemID))
   if not (quality and ilvl and (classID == 2 or classID == 4)) then return nil end
   local total, any = 0, false
   for mat, rows in pairs(DISENCHANT) do
@@ -442,15 +556,34 @@ end
 -- TSM's accounting ledger, from its SavedVariables: as of login (TSM writes new rows on
 -- logout). itemID -> { sale = { price, qty, time, n }, buy = ... }, auction rows only: vendor
 -- sales say nothing about the AH. price is per item.
+-- one of TSM's accounting CSVs for this realm ("csvSales", "csvBuys"), nil without TSM.
+-- TSM's realm key on Forever isn't GetRealmName() ("PvP" for "CAMWOW EU4 Realm 8 PvP"):
+-- that, else the only realm TSM keeps accounting for
+function P.TSMCsv(key)
+  local db = type(TradeSkillMasterDB) == "table" and TradeSkillMasterDB
+  if not db then return nil end
+  local pre = "r@" .. GetRealmName() .. "@internalData@"
+  if not db[pre .. "csvSales"] then
+    local only
+    for k in pairs(db) do
+      local realm = type(k) == "string" and k:match("^r@(.+)@internalData@csvSales$")
+      if realm then
+        if only then only = nil break end
+        only = realm
+      end
+    end
+    if only then pre = "r@" .. only .. "@internalData@" end
+  end
+  local csv = db[pre .. key]
+  return type(csv) == "string" and csv or nil
+end
+
 local ledger
 local function Ledger()
   if ledger then return ledger end
   ledger = {}
-  local db = type(TradeSkillMasterDB) == "table" and TradeSkillMasterDB
-  if not db then return ledger end
-  local pre = "r@" .. GetRealmName() .. "@internalData@"
   for kind, key in pairs({ sale = "csvSales", buy = "csvBuys" }) do
-    local csv = db[pre .. key]
+    local csv = P.TSMCsv(key)
     if type(csv) == "string" then
       -- itemString,stackSize,quantity,price,otherPlayer,player,time,source
       local row = "\ni:(%d+)[^,\n]*,%d+,(%d+),(%d+),[^,\n]*,[^,\n]*,(%d+),Auction"
@@ -468,6 +601,49 @@ local function Ledger()
     end
   end
   return ledger
+end
+
+-- itemID -> auction sales oldest first; TSM's ledger is as of login, so parsed once
+local salesIndex
+local function SalesIndex()
+  if salesIndex then return salesIndex end
+  salesIndex = {}
+  local csv = P.TSMCsv("csvSales")
+  if not csv then return salesIndex end
+  local row = "\ni:(%d+)[^,\n]*,%d+,(%d+),(%d+),[^,\n]*,[^,\n]*,(%d+),Auction"
+  for id, qty, price, t in csv:gmatch(row) do
+    id = tonumber(id)
+    local list = salesIndex[id] or {}
+    salesIndex[id] = list
+    list[#list + 1] = { price = tonumber(price), qty = tonumber(qty), time = tonumber(t) }
+  end
+  for _, list in pairs(salesIndex) do
+    table.sort(list, function(a, b) return a.time < b.time end)
+  end
+  return salesIndex
+end
+
+-- every auction sale of an item in TSM's ledger, oldest first: { price (each), qty, time }
+function P.Sales(itemID)
+  local out = {}
+  for i, x in ipairs(SalesIndex()[Id(itemID)] or {}) do out[i] = x end
+  return out
+end
+
+-- what he sold of it a day lately: OWN_WINDOW days, over at least OWN_MIN_DAYS so a burst
+-- (3 in an hour) doesn't read as a rate. nil when he sold none.
+local OWN_WINDOW, OWN_MIN_DAYS = 14 * 86400, 3 * 86400
+function P.OwnPerDay(itemID)
+  local list = SalesIndex()[Id(itemID)]
+  if not list then return nil end
+  local now, n, first = M.Now(), 0, nil
+  for _, x in ipairs(list) do
+    if now - x.time <= OWN_WINDOW then
+      n, first = n + x.qty, first or x.time
+    end
+  end
+  if n == 0 then return nil end
+  return n / (math.max(now - first, OWN_MIN_DAYS) / 86400)
 end
 
 P.EVIDENCE_OLD = 3 * 86400 -- realm data older than this is a guess
@@ -497,15 +673,21 @@ function P.Evidence(itemID)
   if own and e.from == "scan" then e.sellers = own.sellers end
   local rt, gt = P.DataTime("realm"), P.DataTime("region")
   e.realmAge, e.regionAge = rt and now - rt, gt and now - gt
+  -- TSM's realm data says nothing about a variant: how fresh its prices are is our scan's age
+  if Variant(itemID) then e.realmAge = nil end
   if not (e.min or e.market or e.regionMarket or e.regionSale) then return nil end
   if e.min and e.market then e.spread = e.min / e.market - 1 end
   if e.market and e.regionMarket then e.realmVsRegion = e.market / e.regionMarket - 1 end
   if e.market and e.regionSale then e.vsSale = e.market / e.regionSale - 1 end
-  local mine = Ledger()[itemID]
+  local mine = Ledger()[Id(itemID)]
   if mine then e.sale, e.buy = mine.sale, mine.buy end
   e.avgSell, e.avgBuy = P.Custom("AvgSell", itemID), P.Custom("SmartAvgBuy", itemID)
 
   local low, medium = {}, {}
+  -- prices that disagree (min vs market, realm vs region, market vs sales): the safe price
+  -- already takes the lowest of them, so these alone don't make it a guess
+  local spreadLow = 0
+  local function Spread(text) low[#low + 1] = text spreadLow = spreadLow + 1 end
   local function Pct(f) return ("%d%%"):format(math.floor(math.abs(f) * 100 + 0.5)) end
   if not (e.min or e.market) then low[#low + 1] = "region price only" end
   if not e.perDay then
@@ -523,19 +705,19 @@ function P.Evidence(itemID)
   if e.spread then
     local text = "min " .. Pct(e.spread) .. (e.spread < 0 and " under" or " over") .. " market"
     local far = math.abs(e.spread)
-    if far >= 0.5 then low[#low + 1] = text elseif far >= 0.25 then medium[#medium + 1] = text end
+    if far >= 0.5 then Spread(text) elseif far >= 0.25 then medium[#medium + 1] = text end
   end
   if e.realmVsRegion then
     local x = e.realmVsRegion + 1
     local text = x >= 1 and ("realm %.1fx region"):format(x) or ("realm %s under region")
       :format(Pct(e.realmVsRegion))
-    if x >= 2 then low[#low + 1] = text
+    if x >= 2 then Spread(text)
     elseif x >= 1.5 or x <= 0.5 then medium[#medium + 1] = text end
   end
   -- what it actually sells for: a market far above that is asking, not getting
   if e.vsSale and e.vsSale >= 0.5 then
     local text = ("market %.1fx region sales"):format(e.vsSale + 1)
-    if e.vsSale >= 1 then low[#low + 1] = text else medium[#medium + 1] = text end
+    if e.vsSale >= 1 then Spread(text) else medium[#medium + 1] = text end
   end
   if e.listed == 0 then
     medium[#medium + 1] = "none up"
@@ -552,6 +734,7 @@ function P.Evidence(itemID)
     medium[#medium + 1] = "data " .. math.floor(age / 86400) .. " day old"
   end
   e.level = #low > 0 and "low" or #medium > 0 and "medium" or "high"
+  e.spreadOnly = #low > 0 and #low == spreadLow
   e.reasons = low
   for _, r in ipairs(medium) do e.reasons[#e.reasons + 1] = r end
 

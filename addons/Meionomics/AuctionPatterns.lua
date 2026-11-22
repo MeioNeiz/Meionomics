@@ -200,31 +200,34 @@ B.VIEWS.patterns = {
   sort = "worth",
   classFilters = { { classID = RECIPE_CLASS } },
   columns = {
-    { key = "name", title = "Pattern", width = 0, text = Name },
-    { key = "seen", title = "Seen", width = 50,
-      tip = "Up now, or when last seen on the AH (faded: on your watch list, not up now; "
-        .. "never: not seen since the last full scan). Bag: a limited-stock vendor, shown "
-        .. "after the name. Star: worth learning, " .. M.Money(Pt.WATCH_MIN) .. "/day or more",
+    { key = "name", title = "Pattern", width = 0, text = Name,
+      tip = "Hover a row for the recipe; double-click lists its auctions" },
+    { key = "seen", title = "Seen", width = 50, tip = "Up now, or how long ago it was last seen",
+      more = "Faded: on your watch list, not up now (never: not seen since the last full "
+        .. "scan). Bag: a limited-stock vendor, named after the pattern. Star: worth learning, "
+        .. M.Money(Pt.WATCH_MIN) .. "/day or more.",
       text = Seen },
     { key = "unit", title = "Buyout", width = 96, right = true,
-      tip = "Cheapest auction of it up now; faded rows: when last seen (~: never seen, "
-        .. "market value), bag rows: the vendor's price",
+      tip = "Its cheapest auction up now",
+      more = "Faded rows: the price when last seen (~: never seen, the market value). Bag "
+        .. "rows: the vendor's price.",
       text = function(r) return (r.est and "~" or "") .. M.Money(r.unit) end },
-    { key = "pct", title = "% Mkt", width = 56, right = true,
-      tip = "Buyout as % of this realm's market value",
+    { key = "pct", title = "% Mkt", width = 56, right = true, tip = B.PCT_TIP, more = B.PCT_MORE,
       text = function(r) return B.Pct(r.pct) end },
     { key = "worth", title = "Verdict", width = 100,
-      tip = "The Craft panel's verdict at your skill, paying this buyout to learn it",
+      tip = "Worth learning? The Craft panel's verdict at your skill",
+      more = "Counts this buyout as the cost of learning it.",
       text = Verdict },
     { key = "each", title = "Profit each", width = 90, right = true, desc = true,
-      tip = "Realistic profit per craft: a week's batch, after the AH cut, your own mats at "
-        .. "what they'd sell for",
+      tip = "Realistic profit per craft",
+      more = "A week's batch, after the AH cut, with your own mats at what they'd sell for.",
       text = Each },
     { key = "diff", title = "Skill", width = 56,
       tip = "Its skill-up colour at your rank", text = Skill },
     { key = "learn", title = "Req", width = 40, right = true,
       tip = "Skill needed to learn it (red: above your rank, ~: estimated)", text = Req },
-    { key = "known", title = "Known", width = 56, text = Known },
+    { key = "known", title = "Known", width = 56, text = Known,
+      tip = "Known: you have it. In bags: you hold it, not learnt yet." },
     { key = "payN", title = "Payback", width = 66, right = true,
       tip = "Crafts until the profit has paid for the pattern", text = Payback },
   },
@@ -279,6 +282,8 @@ B.VIEWS.patterns = {
     label:SetPoint("LEFT", known, "RIGHT", 1, 0)
     label:SetText("Show known")
     known:SetChecked(M.db.patternsKnown and true or false)
+    B.LabelClicks(known, label)
+    B.Help(known, { "Show known", "Also list patterns you already know" })
     known:SetScript("OnClick", function(self)
       M.db.patternsKnown = self:GetChecked() or nil
       B.Refresh()
@@ -292,14 +297,9 @@ B.VIEWS.patterns = {
       f.search:SetText("")
       B.Search("")
     end)
-    scan:SetScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_TOP")
-      GameTooltip:SetText("Scan all patterns", 1, 1, 1)
-      GameTooltip:AddLine("Every recipe pattern on the AH, all pages: updates last-seen prices "
-        .. "and the watch list.", nil, nil, nil, true)
-      GameTooltip:Show()
-    end)
-    scan:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    B.Help(scan, { "Scan all patterns", "Every recipe pattern on the AH, all pages",
+      "Clears the search box. Updates last-seen prices and the watch list, so patterns that "
+        .. "aren't up show when they were last seen." })
     f.scanPatterns = scan
     return g
   end,
@@ -315,11 +315,26 @@ B.VIEWS.patterns = {
       .. (n > 0 and (", %d known hidden"):format(n) or "")
       .. (vendor > 0 and (", %d at vendors"):format(vendor) or "")
       .. (watched > 0 and (", %d watched not up"):format(watched) or "")
-      .. (checked and (" | all checked %s ago"):format(Short(M.Now() - checked)) or "")
+      .. (checked and (" | all checked %s ago"):format(Short(M.Now() - checked))
+        or C("dim", " | never fully scanned: Scan all"))
   end,
   reading = function() return "Searching..." end,
   empty = "Every recipe pattern up now; type to narrow it down",
+  none = function(text)
+    if text == "" then return "No recipe patterns are up right now." end
+    return ("No pattern up matches \"%s\".\nScan all lists every one."):format(text)
+  end,
+  hidden = function(n)
+    return ("You know all %d patterns found.\nTick Show known to list them anyway."):format(n)
+  end,
   action = { text = "Auctions",
+    help = function(r)
+      local line = "List the selected pattern's auctions, to buy one"
+      if not r then line = "Select a pattern first; this lists its auctions to buy one" end
+      if r and r.vendor then line = "That one is sold by a vendor, named after it" end
+      if r and r.down then line = "That one isn't up on the AH right now" end
+      return { "Auctions", line }
+    end,
     enabled = function(r) return r ~= nil and not (r.down or r.vendor) end,
     run = function(r)
       if not (r and not (r.down or r.vendor)) then return end

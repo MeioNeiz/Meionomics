@@ -10,7 +10,49 @@ local function Sum(c)
     + (c.auctions or 0)
 end
 
--- { me = { bags, bank, mail, auctions, total }, alts = { { name, class, total }... },
+local function Key(c)
+  local r = c.realmNormalized
+  return c.character .. ((r and r ~= "") and "-" .. r or "")
+end
+
+-- -> IsMe(c), c a Syndicator { character, realmNormalized }. With regional names Syndicator
+-- keys "First Surname-PvP" (ruleset, not realm); its GetCurrentCharacter is nil until its bag
+-- cache is up, so also match the name ourselves
+local function MeMatcher(api)
+  local key = api.GetCurrentCharacter and api.GetCurrentCharacter()
+  local first, surname = UnitName("player")
+  local sepC = Constants.CharacterNameSeparatorConsts
+  local sep = sepC and sepC.CHARACTERNAME_SURNAME_SEPARATOR or " "
+  local me = (surname and surname ~= "") and (first .. sep .. surname) or first
+  local regional = RegionalUniqueNamesEnabled and RegionalUniqueNamesEnabled()
+  local realm = GetNormalizedRealmName()
+  return function(c)
+    if key and Key(c) == key then return true end
+    local r = c.realmNormalized
+    return c.character == me and (regional or r == realm or not r)
+  end
+end
+
+-- Syndicator's other characters, not hidden in its options: { { key, name, class } }
+function I.Others()
+  local api = Syndicator and Syndicator.API
+  if not (api and api.GetAllCharacters and api.GetByCharacterFullName) then return {} end
+  local IsMe, out = MeMatcher(api), {}
+  for _, k in ipairs(api.GetAllCharacters() or {}) do
+    local c = api.GetByCharacterFullName(k)
+    local d = type(c) == "table" and c.details
+    if d and d.character and not (d.show and d.show.inventory == false) and not IsMe(d) then
+      out[#out + 1] = { key = k, name = d.character, class = d.className }
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.name ~= b.name then return a.name < b.name end
+    return a.key < b.key
+  end)
+  return out
+end
+
+-- { me = { bags, bank, mail, auctions, total }, alts = { { name, class, total, key }... },
 --   altTotal, warband, guild, total } or nil when there are none anywhere
 function I.Get(itemID)
   local out = { alts = {}, altTotal = 0, warband = 0, guild = 0 }
@@ -22,14 +64,15 @@ function I.Get(itemID)
     ok, info = pcall(api.GetInventoryInfoByItemID, itemID, true, false)
   end
   if ok and type(info) == "table" then
-    local me, realm = UnitName("player"), GetNormalizedRealmName()
+    local IsMe = MeMatcher(api)
     for _, c in ipairs(info.characters or {}) do
-      if c.character == me and (c.realmNormalized == realm or not c.realmNormalized) then
+      if IsMe(c) then
         out.me = c
       else
         local n = Sum(c)
         if n > 0 then
-          table.insert(out.alts, { name = c.character, class = c.className, total = n })
+          table.insert(out.alts, { name = c.character, class = c.className, total = n,
+            key = Key(c) })
           out.altTotal = out.altTotal + n
         end
       end

@@ -1,5 +1,5 @@
 Title: TSM auction selection hook point (used by Meionomics price history)
-Why: TSM's Browse and Sniper results have no public way to tell another addon which item is selected, so Meionomics can't show that item's price history beside TSM's window. Adds TSMLocalAuctionSelect.callbacks: each is called with the selected row's base item string (nil when nothing is selected) and TSM's window frame (nil when the results table is gone, e.g. tab switched).
+Why: TSM's Browse and Sniper results have no public way to tell another addon which item is selected, so Meionomics can't show that item's price history beside TSM's window. Adds TSMLocalAuctionSelect.callbacks: each is called with the selected row's base item string (nil when nothing is selected), TSM's window frame (nil when the results table is gone, e.g. tab switched) and, for a selected auction, its full item string (keeps the random suffix's bonus IDs, "i:8178::1:12727").
 
 === FILE TradeSkillMaster\App\AuctionUI\AuctionBuyScan.lua
 --- OLD
@@ -16,8 +16,10 @@ function private.LocalSelect(state, selection)
 	local base = state.auctionScrollTable and state.auctionScrollTable:GetBaseElement()
 	local frame = base and base:_GetBaseFrame()
 	local itemString = selection and selection:GetBaseItemString()
+	local full = selection and selection:IsSubRow() and selection:HasRawData()
+		and selection:GetItemString() or nil
 	for _, func in ipairs(TSMLocalAuctionSelect.callbacks) do
-		xpcall(func, geterrorhandler(), itemString, frame)
+		xpcall(func, geterrorhandler(), itemString, frame, full)
 	end
 end
 === END

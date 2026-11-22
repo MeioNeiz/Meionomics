@@ -1,12 +1,15 @@
 -- One recipe as a ledger in Tooltip.lua's row format ({ kind = "gap" | "head" | "row", left,
 -- right }), drawn with M.Tooltip.Render: the crafting panel's recipe hover, trainer tooltips
 -- (hooked in Tooltip.lua) and the recipe item's Shift ledger show the same block. Order: the
--- item made (Ledger.lua's sale rows), costs, profit, learning and where, skill-ups, verdict.
+-- item made (Ledger.lua's sale rows, its Leveling BiS gain), costs, profit, learning and where, skill-ups, verdict.
 --   M.Craft.RecipeRows(recipeID, opts) -> rows, or nil when the recipe isn't recorded
 --   opts.full     every material with its cost and what you have (else one total line)
 --   opts.short    the panel's default hover: Best line, cost, profit, skill-ups, verdict note;
 --                 what its columns show and the detail wait for Shift (opts.full)
---   opts.noHead   leave out the "Meionomics" heading (the caller has its own)
+--   opts.mats     list the materials without opts.full (the recipe item's Shift ledger)
+--   opts.noHead   leave out the "Recipe" heading (the caller has its own)
+--   opts.noBis    leave out the Leveling BiS rows (TooltipFold already shows its verdict)
+--   opts.atTrainer  a trainer's own tooltip: no rows on where to learn it
 --   opts.x        the panel's judged C.Info (adds the verdict last)
 --   opts.queued   n queued: a line when above 0
 --   opts.rank     judge at this rank (Find: recipes above his skill, as at their requirement)
@@ -21,8 +24,13 @@ local function S(key) return M.Tooltip.style[key] end
 local function Dim(text) return Hex(S("dim"), text) end
 local function Grey(text) return Hex(S("grey"), text) end
 local function Money(c) return c and M.Money(c) or Grey("-") end
-local function Profit(p)
+-- e: R.Evaluate's; on prices older than R.STALE the figure is dimmed and says how old
+local function Profit(p, e)
   if not p then return Grey("?") end
+  if e and e.stale then
+    return Dim(p >= 0 and "+" or "") .. M.Money(p, S("dim"), S("dim"))
+      .. Hex(S("warn"), " old " .. R.AgeShort(e.age))
+  end
   return p >= 0 and Hex(S("good"), "+" .. M.Money(p)) or Hex(S("bad"), "-" .. M.Money(-p))
 end
 local function ItemName(id) return C_Item.GetItemNameByID(id) or ("item:" .. id) end
@@ -35,6 +43,61 @@ local function Join(...)
     if v and v ~= "" then out[#out + 1] = v end
   end
   return table.concat(out, S("sep"))
+end
+
+-- Forever Leveling BiS on the item made, for its main spec: "[up] +6.1 (+8%)" as its own
+-- tooltips say it; nil when it isn't gear or FLBiS isn't loaded
+local BIS_MEDIA = "Interface\\AddOns\\ForeverLevelingBiS\\Media\\"
+local BIS_STEP = 0.05 -- FLBiS's smallest gain worth an arrow
+local function BisArrow(name, hex)
+  local r, g, b = tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16),
+    tonumber(hex:sub(5, 6), 16)
+  return ("|T%s%s:0:0:0:0:32:32:0:32:0:32:%d:%d:%d|t "):format(BIS_MEDIA, name, r, g, b)
+end
+local NOT_FOR_YOU = Grey("not for you")
+
+-- where it stands for its slot, in FLBiS's tier colours: "Best in slot", "86% of best, #3 Waist";
+-- " at 35" for gear you can wear only later. Needs patch 62 (API.GetStanding). Second result:
+-- the standing itself
+local function BisStanding(itemID)
+  local api = ForeverLevelingBiS_API
+  if not (api and api.GetStanding) then return nil end
+  local ok, st = pcall(api.GetStanding, itemID)
+  if not (ok and st and st.ratio) then return nil end
+  local at = st.level and (" at %d"):format(st.level) or ""
+  if st.best then return Hex("ff8000", "Best in slot" .. at), st end
+  local tier = (st.ratio > 0.85 and "a335ee") or (st.ratio > 0.5 and "0070dd") or "9d9d9d"
+  return Hex(tier, ("%d%% of best, #%d %s%s"):format(math.floor(st.ratio * 100), st.rank,
+    st.label or "", at)), st
+end
+
+-- "+4.2 (+18%)" with its arrow; base: the worn item's score
+local function GainText(gain, base)
+  if math.abs(gain) < BIS_STEP then return Grey("no change") end
+  local text = ("%+.1f"):format(gain)
+  local pct = base and base > 0 and gain / base * 100
+  if pct and math.abs(pct) >= 1 and math.abs(pct) < 1000 then
+    pct = pct < 0 and math.ceil(pct - 0.5) or math.floor(pct + 0.5)
+    text = text .. (" (%+d%%)"):format(pct)
+  end
+  if gain > 0 then return BisArrow("TipUp", S("good")) .. Hex(S("good"), text) end
+  return BisArrow("TipDown", S("bad")) .. Hex(S("bad"), text)
+end
+
+local function BisGain(itemID)
+  local api = ForeverLevelingBiS_API
+  if not (api and (api.version or 1) >= 2) then return nil end
+  local ok, score, loading = pcall(api.ScoreItem, itemID)
+  if not ok then return nil end
+  if loading then return Dim("loading") end
+  if not score then return nil end
+  local gain, wait
+  ok, gain, wait = pcall(api.GetGain, itemID)
+  if not ok then return nil end
+  if wait then return Dim("loading") end
+  if not gain then return NOT_FOR_YOU end
+  -- score - gain: what it replaces
+  return GainText(gain, score - gain)
 end
 
 -- "you have 40" (bags, bank, mail), alts apart
@@ -120,12 +183,23 @@ local function RequiresRows(Add, x)
   end
 end
 
--- crafts until learning pays for itself
-local function Payback(x, e)
-  local cost = x.learnCost
-  return x.payN or (cost and cost > 0 and e.profit and e.profit > 0
-    and math.ceil(cost / e.profit)) or nil
+-- "Costs to craft" includes a whole station placement (one craft); a batch shares one
+local function StationRows(Add, x, st)
+  if not st then return end
+  if #st.parts == 0 then
+    Add("row", Hex(S("warn"), "  needs a " .. st.name))
+    return
+  end
+  local cost = st.complete and Money(st.cost) or Grey("no price")
+  Add("row", Hex(S("warn"), "  incl. " .. st.name .. " + campfire"), cost)
+  local n = x.real and x.real.n or 1
+  local share = st.complete and n > 1
+    and (", %s each over %d"):format(M.Money(st.cost / n), n) or ""
+  Add("row", Dim("  one per 15 min of crafting" .. share))
 end
+
+-- crafts until learning pays for itself
+local function Payback(x, e) return x.payN or R.Payback(x.learnCost, e.profit) end
 
 local function LearningRows(Add, x, e)
   -- known: the "Known by" row says so
@@ -141,7 +215,7 @@ local function LearningRows(Add, x, e)
       cost and ((x.learnEst and "~" or "") .. M.Money(cost)) or Grey("?"))
   end
   if x.learn and x.tooLow then
-    local rank = C.Rank(x.rec.prof or "")
+    local rank = x.rank or C.Rank(x.rec.prof or "")
     Add("row", Hex(S("bad"), ("  needs %s %s (you %d)"):format(Learn(x), x.rec.prof or "skill",
       rank or 0)))
   end
@@ -153,7 +227,7 @@ function C.RecipeRows(recipeID, opts)
   opts = opts or {}
   local rec = C.Recipe(recipeID)
   if not (rec and rec.mats) then return nil end
-  local rank = opts.rank or C.Rank(rec.prof or "")
+  local rank = opts.rank or (opts.x and opts.x.rank) or C.Rank(rec.prof or "")
   local x = opts.x
   if not x then
     R.ResetCache()
@@ -167,7 +241,7 @@ function C.RecipeRows(recipeID, opts)
   end
 
   if not opts.noHead then
-    Add("head", "Meionomics", x.known and Dim("known") or Dim("not known"))
+    Add("head", "Recipe", x.known and Dim("known") or Dim("not known"))
   end
   local brief = opts.short and not opts.full
   if rec.out and brief and M.Action then
@@ -176,11 +250,23 @@ function C.RecipeRows(recipeID, opts)
   elseif rec.out and M.Ledger then
     M.Ledger.SaleRows(rows, rec.out, { label = opts.outLabel })
   end
+  local bis = rec.out and not opts.noBis
+  local gain = bis and BisGain(rec.out)
+  local standing, st = nil, nil
+  if bis then standing, st = BisStanding(rec.out) end
+  -- gear you can wear only later: GetGain has nothing, its standing carries the gain
+  if gain == NOT_FOR_YOU and st and st.gain then gain = GainText(st.gain, st.base) end
+  if standing then
+    Add("row", "Leveling BiS", standing)
+    if gain and gain ~= NOT_FOR_YOU then Add("row", "  vs worn", gain) end
+  elseif gain then
+    Add("row", "Leveling BiS", gain)
+  end
 
   local short = e.complete and "" or Hex(S("bad"), " +?")
   local can = x.all > 0 and not brief and Dim((" (enough for %d)"):format(x.all)) or ""
   Add("row", "Costs to craft" .. (opts.full and "" or can), Money(e.cost) .. short)
-  if opts.full then
+  if opts.full or opts.mats then
     for _, m in ipairs(rec.mats) do
       local price = R.MatPrice(m[1])
       local have = Have(C.Have(m[1]))
@@ -189,6 +275,7 @@ function C.RecipeRows(recipeID, opts)
         price and Money(price * m[2]) or Grey("no price"))
     end
   end
+  StationRows(Add, x, e.station)
   if e.value then
     local made = R.Made(rec)
     local level = select(3, R.SellValue(rec.out))
@@ -196,14 +283,14 @@ function C.RecipeRows(recipeID, opts)
       or ("after the 5% AH cut" .. (level and level ~= "high" and ", safe price" or ""))
     local each = made > 1 and (", %g made"):format(made) or ""
     Add("row", "Profit each" .. (brief and "" or Dim(" (" .. how .. each .. ")")),
-      Profit(e.profit))
+      Profit(e.profit, e))
   end
 
   if not brief then
     LearningRows(Add, x, e)
   elseif not x.known then
-    local where = C.LearnWhere(x)
-    Add("row", "Learn" .. (where and Dim(" (" .. where .. ")") or ""),
+    local held = x.learnFrom == "held"
+    Add("row", "Learn" .. (held and Dim(" (pattern in your bags)") or ""),
       x.learnCost and ((x.learnEst and "~" or "") .. M.Money(x.learnCost)) or Grey("?"))
     local n = x.learnFrom ~= "held" and Payback(x, e)
     if n then Add("row", Dim("  pays back after " .. Plural(n, "craft"))) end
@@ -211,6 +298,7 @@ function C.RecipeRows(recipeID, opts)
       Add("row", Hex(S("bad"), ("  needs %s (you %d)"):format(Learn(x), rank or 0)))
     end
     RequiresRows(Add, x)
+    if not (held or opts.atTrainer) then WhereRows(Add, x) end
   end
 
   if x.grey then
@@ -240,6 +328,6 @@ function C.RecipeRows(recipeID, opts)
     if why and why ~= "" then Add("row", Dim(why)) end
   end
   if opts.queued and opts.queued > 0 then Add("row", "Queued", Hex(S("good"), opts.queued)) end
-  if brief then Add("row", Grey("Shift: full detail")) end
+  if brief then Add("hint") end
   return rows
 end

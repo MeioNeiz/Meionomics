@@ -19,7 +19,9 @@ Pt.STAR = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_1:0|t"
 --   checked = last full coverage }
 local db
 
-local function IsRecipe(id) return select(6, C_Item.GetItemInfoInstant(id)) == RECIPE_CLASS end
+local function IsRecipe(id)
+  return type(id) == "number" and select(6, C_Item.GetItemInfoInstant(id)) == RECIPE_CLASS
+end
 
 local function Up(id, price, qty, now)
   local rec = db.items[id]
@@ -170,8 +172,18 @@ function M.OnLoad()
   M.db.patterns = M.db.patterns or {}
 end
 
-M.On("PLAYER_LOGIN", function()
-  local key = GetRealmName() .. "-" .. (UnitFactionGroup("player") or "?")
+-- the realm's table and the one kept under "-Faction" while the realm name was blank
+local function Merge(dst, src)
+  for id, s in pairs(src.items or {}) do
+    local d = dst.items[id]
+    if not d or (s.t or 0) > (d.t or 0) then dst.items[id] = s end
+  end
+  if (src.checked or 0) > (dst.checked or 0) then dst.checked = src.checked end
+  return dst
+end
+
+M.OnRealm(function(realm, key)
+  M.MergeBlankRealm(M.db.patterns, realm, Merge)
   db = M.db.patterns[key] or { items = {} }
   M.db.patterns[key] = db
 end)

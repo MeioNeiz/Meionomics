@@ -1,7 +1,8 @@
 -- Recipes: recorded whenever a profession window or trainer shows them, learned or not, for
 -- every character. A CraftProfitDB (the retired CraftProfit addon's data) is imported at login if
 -- present: the workbench scenarios seed their recipes that way.
---   cost    materials at TSM's MatPrice, else the cheaper of market value and min buyout
+--   cost    materials at the cheapest listing in the newest data (our sighting or TSM's), else
+--           TSM's MatPrice, else market value; a vendor when cheaper
 --   sells   market value less the 5% AH cut, or the vendor price if that is more; P.Evidence's
 --           safe price instead when confidence in the market value isn't high
 --   profit  sells x number made - cost
@@ -27,6 +28,7 @@ local function Changed()
     if not ok then geterrorhandler()(err) end
   end
 end
+R.Changed = Changed
 
 -- id -> rec; read-only for callers
 function R.All() return db.recipes end
@@ -36,31 +38,74 @@ function R.All() return db.recipes end
 local cache = {}
 function R.ResetCache() wipe(cache) end
 
+local function VendorBuy(itemID)
+  local key = "v" .. itemID
+  if cache[key] == nil then cache[key] = P.VendorBuy(itemID) or false end
+  return cache[key] or nil
+end
+
+-- AH prices older than this make a profit a guess (P.Age; TSM's data or our last sighting)
+R.STALE = P.LIVE_FOR
+
+-- crafts until the profit pays for learning; nil without profit, or when the profit is too
+-- small to ever repay (float noise near break-even gives ~1e15, which %d can't hold)
+local MAX_PAYBACK = 1e6
+function R.Payback(cost, each)
+  if not (cost and cost > 0 and each and each > 0) then return nil end
+  local n = math.ceil(cost / each)
+  return n <= MAX_PAYBACK and n or nil
+end
+local function Age(itemID)
+  local key = "a" .. itemID
+  if cache[key] == nil then cache[key] = P.Age(itemID) or false end
+  return cache[key] or nil
+end
+
+-- 3m, 5h, 2d
+function R.AgeShort(sec)
+  if sec < 3600 then return math.max(1, math.floor(sec / 60)) .. "m" end
+  if sec < 86400 then return math.floor(sec / 3600) .. "h" end
+  return math.floor(sec / 86400) .. "d"
+end
+
 function R.MatPrice(itemID)
   local key = "m" .. itemID
   if cache[key] == nil then
-    local v = P.Best(itemID, db.matPrice or DEFAULT_MAT)
-    if not v then
-      local market, buyout = P.Get(itemID, "market"), P.Get(itemID, "minBuyout")
-      v = (market and buyout) and math.min(market, buyout) or market or buyout
-    end
+    -- every item on the same footing, so craft-or-buy compares like with like: TSM has no
+    -- MatPrice for some intermediates (bolts)
+    local v = P.Current(itemID) or P.Best(itemID, db.matPrice or DEFAULT_MAT)
+      or P.Get(itemID, "market")
+    local vendor = VendorBuy(itemID)
+    if vendor and (not v or vendor < v) then v = vendor end
     cache[key] = v or false
   end
   return cache[key] or nil
 end
 
 -- what one sells for: after the AH cut, or to a vendor if that pays more; and where.
--- level: P.Evidence's confidence when the AH price counts
+-- level: P.Evidence's confidence when the AH price counts; noAH: the AH has no price at all
 function R.SellValue(itemID)
   local key = "s" .. itemID
   if cache[key] == nil then
     local ah = P.Best(itemID, db.sellPrice or DEFAULT_SELL, "market", "regionSale", "historical")
     local ev = ah and P.Evidence and P.Evidence(itemID)
     if ev and ev.level ~= "high" and ev.price and ev.price < ah then ah = ev.price end
-    local net = ah and ah * AH_CUT
+    -- selling means pricing against the cheapest rival up now, whatever the averages say: our
+    -- own sighting (with only ours up there's no rival), else TSM's latest snapshot of the
+    -- realm's lowest buyout while it's fresh
+    local live = P.Live(itemID)
+    local now = live and live.comp
+    if not live then
+      local age = P.Age(itemID)
+      now = age and age <= R.STALE and P.Get(itemID, "minBuyout") or nil
+    end
+    -- the price that sells within a day (a dip doesn't drag it down), net of cut and deposits
+    local sd = now and M.SellDay and M.SellDay.Quote(itemID, { comp = now })
+    if now and now < (ah or math.huge) then ah = now end
+    local net = sd and sd.v or ah and ah * AH_CUT
     local vendor = P.Get(itemID, "vendor")
     if vendor and (not net or vendor >= net) then
-      cache[key] = { vendor, "vendor" }
+      cache[key] = { vendor, "vendor", nil, not net }
     elseif net then
       cache[key] = { net, "ah", ev and ev.level }
     else
@@ -68,7 +113,7 @@ function R.SellValue(itemID)
     end
   end
   local v = cache[key]
-  if v then return v[1], v[2], v[3] end
+  if v then return v[1], v[2], v[3], v[4] end
 end
 
 ------------------------------------------------------------------------------ Recording
@@ -81,9 +126,48 @@ local function ProfessionOf(recipeID, fallback)
   return fallback
 end
 
+-- Professions, not class skills: class trainers teach spells with reagents (Create Healthstone
+-- under Demonology) that would otherwise pass for recipes. Poisons counts, as rogues use it.
+R.PROFESSION_LINES = { [129] = true, [164] = true, [165] = true, [171] = true, [182] = true,
+  [185] = true, [186] = true, [197] = true, [202] = true, [333] = true, [356] = true,
+  [393] = true, [40] = true }
+local profNames
+-- true for a profession's name; also true when the client can't name them (nothing filtered)
+function R.IsProfession(name)
+  if not profNames then
+    local T = C_TradeSkillUI
+    profNames = {}
+    for line in pairs(R.PROFESSION_LINES) do
+      local ok, n = false, nil
+      if T and T.GetTradeSkillDisplayName then ok, n = pcall(T.GetTradeSkillDisplayName, line) end
+      if ok and type(n) == "string" and n ~= "" then profNames[n] = true end
+    end
+  end
+  if not next(profNames) then return true end
+  local me = charKey and db.chars[charKey]
+  return (profNames[name] or (me and me.profs and me.profs[name])) and true or false
+end
+
+local function ProfessionRecipe(recipeID, prof)
+  return M.CraftData[recipeID] ~= nil or not prof or R.IsProfession(prof)
+end
+
 -- enchants are kept too (no item made: rec.out is nil), their cost matters for levelling
+-- what a scan can change about a recipe: a rescan that changes none of it is no news
+local function Sig(rec)
+  if not rec then return "" end
+  local parts = { rec.name, rec.icon, rec.prof, rec.out, rec.qmin, rec.qmax,
+    rec.known and rec.known[charKey] and "k" or "", rec.diff, rec.skillUps, rec.grey }
+  for i = 1, #parts do parts[i] = tostring(parts[i]) end
+  for _, m in ipairs(rec.mats or {}) do parts[#parts + 1] = m[1] .. "x" .. m[2] end
+  return table.concat(parts, ":")
+end
+
+-- -> rec, and whether anything about it changed
 local function Record(recipeID, profName, learned)
   if type(recipeID) ~= "number" then return nil end
+  local prof = ProfessionOf(recipeID, profName) or (db.recipes[recipeID] or {}).prof
+  if not ProfessionRecipe(recipeID, prof) then return nil end
   local ok, s = pcall(C_TradeSkillUI.GetRecipeSchematic, recipeID, false)
   if not ok or type(s) ~= "table" then return nil end
   local mats = {}
@@ -96,6 +180,7 @@ local function Record(recipeID, profName, learned)
     end
   end
   if #mats == 0 then return nil end
+  local before = Sig(db.recipes[recipeID])
   local rec = db.recipes[recipeID] or {}
   db.recipes[recipeID] = rec
   rec.id = recipeID
@@ -103,7 +188,7 @@ local function Record(recipeID, profName, learned)
   info = okInfo and info or nil
   rec.name = (info and info.name) or s.name or rec.name
   rec.icon = (info and info.icon) or rec.icon
-  rec.prof = ProfessionOf(recipeID, profName) or rec.prof
+  rec.prof = prof
   rec.out = s.outputItemID
   rec.qmin, rec.qmax = s.quantityMin or 1, s.quantityMax or s.quantityMin or 1
   rec.mats = mats
@@ -115,8 +200,9 @@ local function Record(recipeID, profName, learned)
       rec.grey = info.maxTrivialLevel
     end
   end
-  dirty = true
-  return rec
+  local changed = Sig(rec) ~= before
+  if changed then dirty = true end
+  return rec, changed
 end
 R.Record = Record
 
@@ -141,20 +227,23 @@ local function ScanProfession()
     ids = ok and list or {}
   end
   -- a big profession is hundreds of recipes: a few dozen per frame
+  -- every open rescans: only news is announced, or each open threw away the cached routes
+  -- and replanned (the route planner is the costly part of the crafting panel)
   scanning = true
-  local i = 1
+  local i, news = 1, false
   local function Step()
     local stop = math.min(#ids, i + 40)
     for n = i, stop do
       local okI, info = pcall(T.GetRecipeInfo, ids[n])
-      Record(ids[n], prof, okI and info and info.learned)
+      local _, changed = Record(ids[n], prof, okI and info and info.learned)
+      news = news or changed
     end
     i = stop + 1
     if i <= #ids then
       C_Timer.After(0, Step)
     else
       scanning = false
-      Changed()
+      if news then Changed() end
     end
   end
   Step()
@@ -205,8 +294,21 @@ function R.RecordTrainerService(i)
   return rec
 end
 
--- recipe items a vendor sells: itemID -> npc name -> { zone, price, limited, t }. Limited stock
--- is only knowable at the vendor (numAvailable), so it is recorded on every visit.
+-- patterns and materials a vendor sells: itemID -> npc name -> { zone, price (each), limited, t }.
+-- Limited stock is only knowable at the vendor (numAvailable), so it is recorded on every visit.
+-- Materials are any reagent of a CraftData or recorded recipe: P.VendorBuy without TSM.
+local reagents
+local function IsReagent(id)
+  if not reagents then
+    reagents = {}
+    for _, d in pairs(M.CraftData or {}) do
+      local mats = d[9] or {}
+      for i = 1, #mats, 2 do reagents[mats[i]] = true end
+    end
+  end
+  return reagents[id] or R.UsedIn(id) ~= nil
+end
+
 local function ScanMerchant()
   if not (GetMerchantNumItems and GetMerchantItemID) then return end
   local npc = UnitName("npc")
@@ -214,26 +316,30 @@ local function ScanMerchant()
   for i = 1, GetMerchantNumItems() do
     local id = GetMerchantItemID(i)
     local classID = id and select(6, C_Item.GetItemInfoInstant(id))
-    if classID == RECIPE_CLASS then
-      local ok, price, numAvailable
+    if classID == RECIPE_CLASS or (id and IsReagent(id)) then
+      local ok, price, stack, numAvailable, extended
       if C_MerchantFrame and C_MerchantFrame.GetItemInfo then
         local info
         ok, info = pcall(C_MerchantFrame.GetItemInfo, i)
         ok = ok and type(info) == "table"
-        if ok then price, numAvailable = info.price, info.numAvailable end
+        if ok then
+          price, stack, numAvailable = info.price, info.stackCount, info.numAvailable
+          extended = info.hasExtendedCost
+        end
       elseif GetMerchantItemInfo then
-        ok, _, _, price, _, numAvailable = pcall(GetMerchantItemInfo, i)
+        ok, _, _, price, stack, numAvailable, _, _, extended = pcall(GetMerchantItemInfo, i)
       end
-      if ok then
+      -- tokens or honour aren't a gold price
+      if ok and price and price > 0 and not extended then
         db.vendors[id] = db.vendors[id] or {}
-        db.vendors[id][npc] = { zone = GetRealZoneText(), price = price,
+        db.vendors[id][npc] = { zone = GetRealZoneText(), price = price / math.max(1, stack or 1),
           limited = (numAvailable or -1) >= 0, t = M.Now() }
       end
     end
   end
 end
 
-function R.Vendors(itemID) return db.vendors[itemID] end
+function R.Vendors(itemID) return db and db.vendors[itemID] end
 
 ------------------------------------------------------------------------------ Lookup
 local function Rebuild()
@@ -300,9 +406,16 @@ end
 
 function R.Made(rec) return ((rec.qmin or 1) + (rec.qmax or 1)) / 2 end
 -- recipes only in the client data (C.Recipe built them, never seen in a window): the spell
-function R.KnownHere(rec)
+-- known by the shown character (R.SetViewer); KnownMine always this one
+function R.KnownMine(rec)
   if rec.known and rec.known[charKey] then return true end
-  return rec.built and IsPlayerSpell and IsPlayerSpell(rec.id) or nil
+  -- a recipe learned since the profession window was last open isn't recorded yet
+  return IsPlayerSpell and IsPlayerSpell(rec.id) or nil
+end
+local viewKey   -- nil: this character
+function R.KnownHere(rec)
+  if viewKey then return rec.known and rec.known[viewKey] or nil end
+  return R.KnownMine(rec)
 end
 function R.KnownBy(rec)
   local names = {}
@@ -314,19 +427,74 @@ function R.KnownBy(rec)
   return names
 end
 
--- { cost, complete, value, where, profit } for one craft
+-- a station item or campfire kit: bought, or crafted when that's cheaper and you can (or
+-- nobody sells it)
+local function PartPrice(item, maker)
+  local p = R.MatPrice(item)
+  local rec = maker ~= 0 and M.Craft and M.Craft.Recipe(maker)
+  if rec and rec.mats and (not p or R.KnownHere(rec)) then
+    local e = R.Evaluate(rec)
+    local each = e.complete and e.cost / R.Made(rec)
+    if each and (not p or each < p) then p = each end
+  end
+  return p
+end
+
+-- the camp station a recipe needs (CraftData M.CraftStation): one placement (station item and
+-- a campfire kit, both used up) serves 15 minutes of crafting.
+-- -> { name, cost, complete, parts = { { item, price }, ... } } or nil; no parts for a fixed
+-- station (Black Anvil, Moonwell): no cost
+function R.Station(rec)
+  local id = M.CraftStation and M.CraftStation[rec.id]
+  if not id then return nil end
+  local key = "s" .. id
+  if cache[key] == nil then
+    local d = M.CraftStations[id]
+    local st = { name = d[1], cost = 0, complete = true, parts = {} }
+    if d[2] ~= 0 then
+      for _, part in ipairs({ { d[2], d[3] }, M.CraftCampfire }) do
+        local p = PartPrice(part[1], part[2])
+        st.parts[#st.parts + 1] = { item = part[1], price = p }
+        if p then st.cost = st.cost + p else st.complete = false end
+      end
+    end
+    cache[key] = st
+  end
+  return cache[key]
+end
+
+-- { cost, complete, value, where, profit, age, stale, matCost, station } for one craft: cost
+-- includes a whole station placement (R.Station), what crafting just one takes. age: seconds
+-- since the oldest AH price in it (materials a vendor doesn't sell, the output when it goes to
+-- the AH)
 function R.Evaluate(rec)
-  local cost, complete = 0, true
+  local cost, complete, age = 0, true, nil
+  local function Older(id)
+    local a = Age(id)
+    if a and a > (age or -1) then age = a end
+  end
   for _, m in ipairs(rec.mats) do
     local p = R.MatPrice(m[1])
     if p then cost = cost + p * m[2] else complete = false end
+    if p and not VendorBuy(m[1]) then Older(m[1]) end
   end
-  local e = { cost = cost, complete = complete }
+  local matCost = cost
+  local st = R.Station(rec)
+  if st then
+    cost = cost + st.cost
+    complete = complete and st.complete
+  end
+  local e = { cost = cost, complete = complete, matCost = matCost, station = st }
   if rec.out then
-    local each, where = R.SellValue(rec.out)
+    local each, where, _, noAH = R.SellValue(rec.out)
     e.value, e.where = each and each * R.Made(rec), where
-    e.profit = (e.value and complete) and (e.value - cost) or nil
+    -- no AH data for a tradeable item (new, never posted) isn't proof it's worth only its
+    -- vendor price: a 2s bag made from 327g of mats showed as a 327g loss
+    e.noAH = noAH and P.Auctionable(rec.out) or nil
+    e.profit = (e.value and complete and not e.noAH) and (e.value - cost) or nil
+    if where == "ah" then Older(rec.out) end
   end
+  e.age, e.stale = age, age and age > R.STALE or nil
   return e
 end
 
@@ -404,7 +572,21 @@ local function ScanProfessions()
   end
 end
 
-function R.Professions() return db.chars[charKey].profs or {} end
+function R.Professions() return db.chars[viewKey or charKey].profs or {} end
+
+-- the crafting panel showing an alt: its professions and known recipes as its last login and
+-- window scans saw them, for everything judged meanwhile (tooltips too). nil: this character.
+function R.Viewer() return viewKey end
+function R.SetViewer(key)
+  if key == charKey or not (key and db.chars[key]) then key = nil end
+  if key == viewKey then return end
+  viewKey = key
+  R.ResetCache()
+  Changed()
+end
+function R.Me() return charKey end
+-- key -> { name, class, profs }, every character logged in since Meionomics recorded them
+function R.Chars() return db.chars end
 
 local prevOnLoad = M.OnLoad
 function M.OnLoad()
@@ -424,6 +606,10 @@ M.On("PLAYER_LOGIN", function()
   me.name, me.realm, me.class = UnitName("player"), GetRealmName(), select(2, UnitClass("player"))
   ScanProfessions()
   ImportCraftProfit()
+  -- class spells recorded before ProfessionRecipe existed
+  for id, rec in pairs(db.recipes) do
+    if not ProfessionRecipe(id, rec.prof) then db.recipes[id], dirty = nil, true end
+  end
   pcall(M.On, "SKILL_LINES_CHANGED", ScanProfessions)
   -- windows send bursts of events: one scan a moment after the last
   local tickets = {}
@@ -437,6 +623,18 @@ M.On("PLAYER_LOGIN", function()
   for _, e in ipairs(profEvents) do
     pcall(M.On, e, function() Later("prof", ScanProfession) end)
   end
+  -- learnt or crafted is known, whatever the last window scan saw: a character crafted a Star Belt
+  -- the scans never recorded as learnt
+  local function Learnt(id)
+    if type(id) ~= "number" or not (db.recipes[id] or M.CraftData[id]) then return end
+    local rec = db.recipes[id]
+    if rec and rec.known and rec.known[charKey] then return end
+    if Record(id, nil, true) then Changed() end
+  end
+  pcall(M.On, "NEW_RECIPE_LEARNED", function(_, id) Learnt(id) end)
+  M.On("UNIT_SPELLCAST_SUCCEEDED", function(_, unit, _, id)
+    if unit == "player" then Learnt(id) end
+  end)
   for _, e in ipairs({ "TRAINER_SHOW", "TRAINER_UPDATE" }) do
     pcall(M.On, e, function() Later("trainer", ScanTrainer) end)
   end

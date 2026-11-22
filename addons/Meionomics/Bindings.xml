@@ -1,0 +1,14 @@
+<Bindings>
+  <Binding name="MEIONOMICS_CRAFT_NEXT" header="MEIONOMICS" category="ADDONS">
+    Meionomics.CraftUI.CraftNext()
+  </Binding>
+  <Binding name="MEIONOMICS_CRAFT_ONE" category="ADDONS">
+    Meionomics.CraftUI.CraftNext(true)
+  </Binding>
+  <Binding name="MEIONOMICS_CRAFT_TOGGLE" category="ADDONS">
+    Meionomics.CraftUI.Toggle()
+  </Binding>
+  <Binding name="MEIONOMICS_SELL_NEXT" category="ADDONS">
+    Meionomics.AuctionSell.Next()
+  </Binding>
+</Bindings>

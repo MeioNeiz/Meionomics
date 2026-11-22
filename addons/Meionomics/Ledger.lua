@@ -49,6 +49,22 @@ function L.Price(ev)
   return ev.price, ev.price < (market or math.huge)
 end
 
+-- SellDay's price, its odds and what it rests on (sd: SellDay.Quote, nil adds nothing)
+function L.SellDayRows(rows, sd)
+  if not sd then return rows end
+  local function Add(left, right) rows[#rows + 1] = { kind = "row", left = left, right = right } end
+  if sd.price then
+    Add("Sells in a day" .. C("dim", " (" .. M.SellDay.Odds(sd.P) .. ")"),
+      M.Money(sd.price) .. C("dim", " each"))
+    local dip = (sd.dip or sd.jump) and (M.SellDay.DipText(sd):gsub(", $", "")) or nil
+    Add(C("dim", Join(dip, sd.fall and "the low has held: a real fall" or nil,
+      M.SellDay.Basis(sd.fit))))
+  elseif sd.slow then
+    Add("Sells in a day", C("warn", "slow: not 4 in 5 even 12% under"))
+  end
+  return rows
+end
+
 function L.SaleRows(rows, itemID, opts)
   opts = opts or {}
   local function Add(kind, left, right)
@@ -67,6 +83,7 @@ function L.SaleRows(rows, itemID, opts)
       or (ev.listed == 0 and "none up")
     local detail = Join(min, ev.market and ("market " .. M.Money(ev.market)))
     if detail ~= "" then Add("row", C("dim", detail)) end
+    L.SellDayRows(rows, M.SellDay.Quote(itemID))
     Add("row", "Confidence", L.Level(ev.level))
     if #ev.reasons > 0 then Add("row", C("dim", table.concat(ev.reasons, S().sep))) end
     if ev.perDay then Add("row", "Region sold/day", M.Count(ev.perDay)) end

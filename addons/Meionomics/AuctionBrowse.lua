@@ -33,11 +33,45 @@ end
 local LEVEL = { high = { 1, "good", "High" }, medium = { 2, "warn", "Medium" },
   low = { 3, "bad", "Low" } }
 
+------------------------------------------------------------------------------ Hover help
+-- { title, line, more } (more on Shift), or fn(widget) returning one; as CraftUI's controls
+local LABEL, MUTED = NORMAL_FONT_COLOR or { r = 1, g = 0.82, b = 0 }, "999999"
+local function ShowHelp(self)
+  local h = self.meioHelp
+  if type(h) == "function" then h = h(self) end
+  if not h then return end
+  GameTooltip:SetOwner(self, self.meioAnchor or "ANCHOR_TOP")
+  GameTooltip:SetText(h[1], 1, 1, 1)
+  if h[2] then GameTooltip:AddLine(h[2], LABEL.r, LABEL.g, LABEL.b, true) end
+  if h[3] and IsShiftKeyDown() then
+    GameTooltip:AddLine(h[3], 0.8, 0.8, 0.8, true)
+  elseif h[3] then
+    M.Tooltip.ShiftHint(GameTooltip)
+  end
+  GameTooltip:Show()
+end
+
+function B.Help(widget, help, anchor)
+  widget.meioHelp, widget.meioAnchor = help, anchor
+  if widget.meioHelpHooked then return end
+  widget.meioHelpHooked = true
+  if widget.SetMotionScriptsWhileDisabled then widget:SetMotionScriptsWhileDisabled(true) end
+  widget:HookScript("OnEnter", ShowHelp)
+  widget:HookScript("OnLeave", GameTooltip_Hide)
+end
+
+M.On("MODIFIER_STATE_CHANGED", function(_, key)
+  if not (key == "LSHIFT" or key == "RSHIFT") then return end
+  local owner = GameTooltip:IsShown() and GameTooltip:GetOwner()
+  if owner and owner.meioHelp and owner:IsMouseOver() then ShowHelp(owner) end
+end)
+
 ------------------------------------------------------------------------------ Data
 -- state.rows: what the search found, state.shown: after the view's filter, sorted
 local state = { rows = {}, shown = {}, queue = {}, offset = 0, view = "items" }
 B.state = state
 B.VIEWS = {}
+B.onBuild = {}   -- fn(panel): later files' extra controls
 
 -- unit: buyoutAmount read as per item, as the workbench emulates it (unconfirmed in game).
 -- buyout: buyoutAmount as given, which is what Blizzard's Buy tab pays, whichever it is.
@@ -68,14 +102,75 @@ function B.Row(key, r)
     safe = safe, pctSafe = (safe and safe > 0 and unit) and unit / safe * 100 or nil,
     level = ev and ev.level, levelRank = ev and LEVEL[ev.level][1],
     sold = sells.perDay, rate = sells.rate, auctionID = r.auctionID, buyout = unit,
-    flip = not mine and P.FlipGain(P.Get(id, "vendor"), unit) or nil }
+    flip = not mine and P.FlipGain(P.Get(id, "vendor"), unit) or nil, commodity = r.commodity }
 end
 
 function B.CanBuy(r) return r and r.auctionID and r.buyout and not r.mine and true or false end
 
--- Blizzard's own buyout: its confirmation popup with the amount, then PlaceBid on Accept
+------------------------------------------------------------------------------ Commodities
+-- Stackable goods are commodities on Forever's AH (TSM treats them so too): SendSearchQuery is
+-- answered by COMMODITY_SEARCH_RESULTS_UPDATED, and they're bought by quantity, cheapest
+-- first, not by auction. StartCommoditiesPurchase (needs a click) gets the server's quote,
+-- then ConfirmCommoditiesPurchase buys; a quote over expect x QUOTE_SLACK (sold meanwhile) is
+-- cancelled instead and the item searched again.
+local QUOTE_SLACK = 1.1
+local QUOTE_WAIT = 10
+local commodity   -- { itemID, qty, expect, done = fn(ok, c) }
+
+function B.Commodity() return commodity end
+
+local function EndCommodity(ok)
+  local c = commodity
+  if not c then return end
+  commodity = nil
+  if not ok then pcall(C_AuctionHouse.CancelCommoditiesPurchase) end
+  if c.done then c.done(ok, c) end
+  B.Refresh()
+end
+
+function B.BuyCommodity(itemID, qty, expect, done)
+  if commodity or qty <= 0 then return end
+  local c = { itemID = itemID, qty = qty, expect = expect, done = done }
+  commodity = c
+  C_AuctionHouse.StartCommoditiesPurchase(itemID, qty)
+  C_Timer.After(QUOTE_WAIT, function() if commodity == c then EndCommodity(false) end end)
+  B.Refresh()
+end
+
+M.On("COMMODITY_PRICE_UPDATED", function(_, _, total)
+  local c = commodity
+  if not c or c.total then return end
+  local name = C_Item.GetItemNameByID(c.itemID) or ("item " .. c.itemID)
+  if c.expect and total > c.expect * QUOTE_SLACK then
+    M.Print(("%d %s now cost %s, not %s: not bought, searching it again"):format(c.qty, name,
+      M.Money(total), M.Money(c.expect)))
+    EndCommodity(false)
+    return B.Research(c.itemID)
+  end
+  if GetMoney() < total then
+    M.Print(("not enough gold for %d %s (%s)"):format(c.qty, name, M.Money(total)))
+    return EndCommodity(false)
+  end
+  c.total = total
+  C_AuctionHouse.ConfirmCommoditiesPurchase(c.itemID, c.qty)
+end)
+M.On("COMMODITY_PRICE_UNAVAILABLE", function() EndCommodity(false) end)
+M.On("COMMODITY_PURCHASE_SUCCEEDED", function() EndCommodity(true) end)
+M.On("COMMODITY_PURCHASE_FAILED", function() EndCommodity(false) end)
+
+-- Blizzard's own buyout: its confirmation popup with the amount, then PlaceBid on Accept;
+-- a commodity row buys its quantity (the cheapest units, so never dearer than the row)
 function B.Buy(r)
   if not B.CanBuy(r) then return end
+  if r.commodity then
+    return B.BuyCommodity(r.itemID, r.qty, r.unit * r.qty, function(ok)
+      if not ok then return end
+      for i, x in ipairs(state.rows) do
+        if x == r then table.remove(state.rows, i) break end
+      end
+      if state.selected == r then state.selected = nil end
+    end)
+  end
   state.buying = r.auctionID
   AuctionHouseFrame:StartItemBuyout(r.auctionID, r.buyout)
 end
@@ -111,6 +206,7 @@ function B.View() return B.VIEWS[state.view] end
 
 function B.Refresh()
   local view = B.View()
+  if view.Prepare then view.Prepare(state.rows) end
   local shown = {}
   for _, r in ipairs(state.rows) do
     if not view.Keep or view.Keep(r) then shown[#shown + 1] = r end
@@ -121,12 +217,29 @@ function B.Refresh()
     return Less(a, b, state.sort, state.desc)
   end)
   state.shown = shown
-  state.offset = math.max(0, math.min(state.offset or 0, #shown - (B.visible or 1)))
+  local vis = B.visible or 1
+  -- the row the view acts on next is scrolled to the top row when it changes; between changes
+  -- the list stays where the wheel left it
+  local focus = view.Focus and view.Focus(shown)
+  if focus ~= state.focus then
+    state.focus = focus
+    for i, r in ipairs(shown) do
+      if r == focus then
+        state.offset = i - 1
+        break
+      end
+    end
+  end
+  state.offset = math.max(0, math.min(state.offset or 0, #shown - vis))
   if B.panel then B.Draw() end
 end
 
 ------------------------------------------------------------------------------ Searching
--- Blizzard throttles item searches: one at a time, the next when the answer is in
+-- Blizzard throttles item searches: one at a time, the next when the answer is in, or after
+-- SEARCH_WAIT without one. A throttled query is dropped with no answer, and the READY event
+-- can be missed (e.g. a /reload mid-wait), so waits for either are polled too.
+local SEARCH_WAIT = 5
+local BROWSE_WAIT = 10
 local function Next()
   local key = table.remove(state.queue, 1)
   state.current = key
@@ -137,12 +250,20 @@ local function Next()
   end
   if not C_AuctionHouse.IsThrottledMessageSystemReady() then
     table.insert(state.queue, 1, key)
-    state.current, state.waitThrottle = nil, true
+    local wait = {}
+    state.current, state.waitThrottle = nil, wait
+    C_Timer.After(1, function()
+      if state.waitThrottle == wait then
+        state.waitThrottle = false
+        Next()
+      end
+    end)
     return
   end
   state.read = state.read + 1
   C_AuctionHouse.SendSearchQuery(key, { { sortOrder = Enum.AuctionHouseSortOrder.Price,
     reverseSort = false } }, true)
+  C_Timer.After(SEARCH_WAIT, function() if state.current == key then Next() end end)
   if B.panel then B.Draw() end
 end
 
@@ -159,11 +280,23 @@ local function Reset(text)
 end
 
 function B.Search(text)
+  if B.View().keysOnly then B.SetView("items") end
   Reset(text)
   state.busy, state.waitBrowse = true, true
   C_AuctionHouse.SendBrowseQuery({ searchString = text or "", filters = {},
     itemClassFilters = B.View().classFilters or {}, sorts = { { sortOrder =
     Enum.AuctionHouseSortOrder.Price, reverseSort = false } } })
+  local search = state.queue
+  state.heard = GetTime()
+  local function Check()
+    if not (state.waitBrowse and state.queue == search) then return end
+    local quiet = GetTime() - state.heard
+    if quiet < BROWSE_WAIT then return C_Timer.After(BROWSE_WAIT - quiet, Check) end
+    state.waitBrowse, state.busy = false, false
+    M.Print("the AH didn't answer the search (busy or throttled): search again")
+    B.Refresh()
+  end
+  C_Timer.After(BROWSE_WAIT, Check)
   B.Refresh()
 end
 
@@ -177,10 +310,32 @@ function B.SearchKeys(keys, label)
   Next()
 end
 
+-- an item's listings went stale (a buy quoted dearer): its rows are read again in place.
+-- Only for items read one by one; a browse list has no rows of their auctions
+function B.Research(itemID)
+  local found
+  for i = #state.rows, 1, -1 do
+    if state.rows[i].itemID == itemID then
+      if state.selected == state.rows[i] then state.selected = nil end
+      table.remove(state.rows, i)
+      found = true
+    end
+  end
+  if not found then return end
+  state.queue[#state.queue + 1] = C_AuctionHouse.MakeItemKey(itemID)
+  -- the item was counted when first read
+  state.read = state.read - 1
+  if state.busy then return B.Refresh() end
+  state.busy = true
+  B.Refresh()
+  Next()
+end
+
 -- a view with FromBrowse lists browse results as they are (one row per item, all pages);
 -- items reads each item's auctions
 local function BrowseResults()
   if not state.waitBrowse then return end
+  state.heard = GetTime()
   local view, results = B.View(), C_AuctionHouse.GetBrowseResults()
   if view.FromBrowse then
     if C_AuctionHouse.HasFullBrowseResults and not C_AuctionHouse.HasFullBrowseResults() then
@@ -209,8 +364,27 @@ M.On("ITEM_SEARCH_RESULTS_UPDATED", function(_, key)
   if not SameKey(key, state.current) then return end
   for i = 1, C_AuctionHouse.GetNumItemSearchResults(key) do
     local r = C_AuctionHouse.GetItemSearchResultInfo(key, i)
-    if r and r.buyoutAmount and r.buyoutAmount > 0 then
+    if r and r.buyoutAmount and r.buyoutAmount > 0 and r.buyoutAmount <= M.MAX_COPPER then
       state.rows[#state.rows + 1] = B.Row(key, r)
+    end
+  end
+  B.Refresh()
+  Next()
+end)
+
+-- the row's own units are left out: they can't be bought, and a row only of them is ours
+M.On("COMMODITY_SEARCH_RESULTS_UPDATED", function(_, itemID)
+  local key = state.current
+  if not (key and key.itemID == itemID) then return end
+  for i = 1, C_AuctionHouse.GetNumCommoditySearchResults(itemID) do
+    local r = C_AuctionHouse.GetCommoditySearchResultInfo(itemID, i)
+    if r and r.unitPrice and r.unitPrice > 0 and r.unitPrice <= M.MAX_COPPER then
+      local own = r.numOwnerItems or 0
+      local qty = r.quantity - own
+      state.rows[#state.rows + 1] = B.Row(key, { commodity = true, auctionID = r.auctionID,
+        buyoutAmount = r.unitPrice, quantity = qty > 0 and qty or r.quantity,
+        containsOwnerItem = qty <= 0, owners = r.owners,
+        totalNumberOfOwners = r.totalNumberOfOwners })
     end
   end
   B.Refresh()
@@ -226,9 +400,19 @@ end)
 
 M.On("AUCTION_HOUSE_CLOSED", function()
   state.queue, state.current, state.busy, state.waitBrowse = {}, nil, false, false
+  state.waitThrottle = false
+  commodity = nil
 end)
 
 ------------------------------------------------------------------------------ Items view
+-- shared with the other views' columns
+B.ROW_TIP = "Hover a row for the item; click to select, double-click to buy"
+B.PCT_TIP = "Price as % of this realm's market value"
+B.PCT_MORE = "Blue under 50%, green under 80%, yellow under 110%, orange, then red over 135% "
+  .. "(TSM's colours). A dash: no market value yet (no TSM price, and Meionomics' own AH scan "
+  .. "hasn't seen it)."
+B.SELLER_TIP = "Who listed it; +N: more sellers at this price. Yours in gold."
+
 local function Sold(r)
   if not r.sold then return C("dim", "-") end
   local rate = r.rate and C("grey", (" %d%%"):format(math.floor(r.rate * 100 + 0.5))) or ""
@@ -243,28 +427,30 @@ end
 B.VIEWS.items = {
   sort = "pct",
   columns = {
-    { key = "name", title = "Item", width = 0 },
-    { key = "unit", title = "Price each", width = 104, right = true,
+    { key = "name", title = "Item", width = 0, tip = B.ROW_TIP },
+    { key = "unit", title = "Price each", width = 104, right = true, tip = "Buyout for one",
       text = function(r) return M.Money(r.unit) end },
-    { key = "pct", title = "% Mkt", width = 62, right = true,
-      tip = "Price each as % of this realm's market value",
+    { key = "pct", title = "% Mkt", width = 62, right = true, tip = B.PCT_TIP, more = B.PCT_MORE,
       text = function(r) return B.Pct(r.pct) end },
     { key = "pctSafe", title = "% Safe", width = 62, right = true,
-      tip = "Price each as % of the safe price: the lower of this realm's market value and the "
-        .. "region's sale average (min buyout left out: that is these auctions)",
+      tip = "Price each as % of the safe price",
+      more = "Safe price: the lower of this realm's market value and the region's sale "
+        .. "average. The cheapest listing is left out: that is these auctions.",
       text = function(r) return B.Pct(r.pctSafe) end },
-    { key = "levelRank", title = "Conf", width = 62,
-      tip = "How far to trust this realm's price; hover a row and hold Shift for why",
+    { key = "levelRank", title = "Conf", width = 62, tip = "How far to trust this realm's price",
+      more = "High, Medium or Low. Hover a row and hold Shift for why.",
       text = Level },
     { key = "flip", title = "Vendor +", width = 72, right = true, desc = true,
-      tip = "Buy it and sell it to a vendor: the gain on each. Only listed when it's worth it.",
+      tip = "Gain on each from buying it here and selling it to a vendor",
+      more = "Only shown when it's worth it. Tick Below vendor to list only these.",
       text = function(r) return r.flip and C("good", "+" .. M.Money(r.flip)) or C("dim", "-") end },
-    { key = "qty", title = "Qty", width = 40, right = true, text = function(r) return r.qty end },
-    { key = "seller", title = "Seller", width = 100,
+    { key = "qty", title = "Qty", width = 40, right = true, tip = "How many in the auction",
+      text = function(r) return r.qty end },
+    { key = "seller", title = "Seller", width = 100, tip = B.SELLER_TIP,
       text = function(r) return r.mine and C("accent", r.seller) or r.seller end },
     { key = "sold", title = "Region/day", width = 98, right = true, desc = true,
-      tip = "Sold per day across the region (TSM region data), and the share of listings "
-        .. "that sell. No realm figure exists.",
+      tip = "Sold per day across the region, and the share of listings that sell",
+      more = "TSM's region data. No figure exists for this realm alone.",
       text = Sold },
   },
   Keep = function(r)
@@ -278,9 +464,35 @@ B.VIEWS.items = {
       .. (state.more and (", first %d items only"):format(MAX_ITEMS) or "")
   end,
   reading = function() return ("Reading item %d of %d"):format(state.read, state.items) end,
-  empty = "Search for an item; leave it empty for everything up",
+  empty = "Type an item name and press Enter; an empty search lists everything up",
+  welcome = function()
+    local text = C("accent", "Search the auction house") .. "\n\nType part of an item name and "
+      .. "press Enter, or search with the box empty to list everything up (the first "
+      .. MAX_ITEMS .. " items).\nTick Below to see only bargains.\n\nShopping list: buy what "
+      .. "your craft queue needs.  BiS upgrades: gear that beats what you wear.\nSell from bags: "
+      .. "post what you carry at Meionomics' price, one key press each."
+    if not P.Source() then
+      text = text .. "\n\n" .. C("warn", "No prices yet:") .. " Meionomics reads them from TSM, "
+        .. "or from its own scan when you open the AH (/meio autoscan)."
+    end
+    return text
+  end,
+  hidden = function(n)
+    local below = M.db.browseBelow
+    local what = below and ("Nothing under %d%% of market"):format(below) or "Nothing"
+    if M.db.browseFlip then what = what .. (below and " or" or "") .. " below vendor" end
+    return ("%s among these %d auctions.\nUntick the filters, or raise the %%."):format(what, n)
+  end,
   action = { text = BUYOUT or "Buyout", enabled = function(r) return B.CanBuy(r) end,
-    run = function(r) B.Buy(r) end },
+    run = function(r) B.Buy(r) end,
+    help = function(r)
+      local title = BUYOUT or "Buyout"
+      local more = "Blizzard asks you to confirm the price first. Double-clicking a row "
+        .. "does the same."
+      if not r then return { title, "Select an auction in the list first", more } end
+      if r.mine then return { title, "That auction is yours" } end
+      return { title, "Buy the selected auction", more }
+    end },
 }
 
 ------------------------------------------------------------------------------ Panel
@@ -332,6 +544,25 @@ local function FillRow(row, r, i)
   row:Show()
 end
 
+-- centred in an empty list: what to do next. nil while there are rows to show.
+local function Field(v, ...)
+  if type(v) == "function" then return v(...) end
+  return v
+end
+
+function B.ListNote(view, shown)
+  if #shown > 0 then return nil end
+  if state.waitBrowse or state.busy then return C("dim", "Searching the auction house...") end
+  if state.text == nil then return Field(view.welcome) or Field(view.empty) end
+  if #state.rows == 0 then
+    if view.none then return Field(view.none, state.text) end
+    if state.text == "" then return "Nothing up right now." end
+    return ("Nothing up matches \"%s\".\nCheck the spelling, or search with the box empty.")
+      :format(state.text)
+  end
+  return Field(view.hidden, #state.rows) or "Everything found is hidden by the filter."
+end
+
 function B.Draw()
   local f = B.panel
   local view, shown = B.View(), state.shown
@@ -356,12 +587,19 @@ function B.Draw()
   elseif state.text == nil then
     status = view.empty
   elseif #state.rows == 0 then
-    status = "Nothing found"
+    status = Field(view.noneStatus) or "Nothing found"
   else
     status = view.status(#state.rows - #shown)
   end
   f.status:SetText(status)
-  f.action:SetText(view.action.text)
+  local note = B.ListNote(view, shown)
+  f.note:SetText(note or "")
+  f.note:SetShown(note ~= nil)
+  if view.OnDraw then view.OnDraw(f) end
+  local text = view.action.text
+  if type(text) == "function" then text = text(state.selected) end
+  f.action:SetText(text)
+  f.action:SetWidth(math.max(100, f.action:GetTextWidth() + 30))
   f.action:SetEnabled(view.action.enabled(state.selected))
   f.patterns:SetChecked(state.view == "patterns")
   local first = #shown > 0 and state.offset + 1 or 0
@@ -392,15 +630,10 @@ local function Header(f, col)
     end
     B.Refresh()
   end)
-  if col.tip then
-    h:SetScript("OnEnter", function(self)
-      GameTooltip:SetOwner(self, "ANCHOR_TOP")
-      GameTooltip:SetText(col.title, 1, 1, 1)
-      GameTooltip:AddLine(col.tip, nil, nil, nil, true)
-      GameTooltip:Show()
-    end)
-    h:SetScript("OnLeave", function() GameTooltip:Hide() end)
-  end
+  B.Help(h, function()
+    local sort = Hex(MUTED, "Click to sort, again to reverse")
+    return { col.title, col.tip and (col.tip .. "\n" .. sort) or sort, col.more }
+  end)
   return h
 end
 
@@ -455,7 +688,13 @@ local function Check(f, text, anchor, x)
   b.label = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   b.label:SetPoint("LEFT", b, "RIGHT", 1, 0)
   b.label:SetText(text)
+  B.LabelClicks(b, b.label)
   return b
+end
+
+-- a check box's label clicks and hovers as the box does
+function B.LabelClicks(box, label)
+  box:SetHitRectInsets(0, -math.ceil(label:GetStringWidth() + 2), 0, 0)
 end
 
 -- items: [x] Below [80] % of market  [x] Below vendor
@@ -485,10 +724,25 @@ local function BelowFilter(f, anchor)
     M.db.browseBelow = below:GetChecked() and v or nil
     B.Refresh()
   end
+  -- a new % in the box is a filter asked for: it ticks Below
+  local function Typed(self)
+    local v = tonumber(self:GetText())
+    if v and v ~= (M.db.browseBelowValue or 80) then below:SetChecked(true) end
+    Apply()
+  end
   below:SetChecked(M.db.browseBelow ~= nil)
   below:SetScript("OnClick", Apply)
-  pct:SetScript("OnEnterPressed", function(self) self:ClearFocus() Apply() end)
-  pct:SetScript("OnEditFocusLost", Apply)
+  B.LabelClicks(below, label)
+  pct:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+  pct:SetScript("OnEditFocusLost", Typed)
+  pct:SetScript("OnEscapePressed", function(self)
+    self:SetText(tostring(M.db.browseBelowValue or 80))
+    self:ClearFocus()
+  end)
+  B.Help(below, { "Below % of market", "Only list auctions priced under this share of their "
+    .. "market value", "Set the % in the box. With Below vendor also ticked, a row matching "
+    .. "either shows." })
+  B.Help(pct, { "Below: % of market", "Type a percentage and press Enter: it ticks Below" })
   local flip = CreateFrame("CheckButton", nil, g, "UICheckButtonTemplate")
   flip:SetSize(24, 24)
   flip:SetPoint("LEFT", label2, "RIGHT", 12, 0)
@@ -500,6 +754,10 @@ local function BelowFilter(f, anchor)
     M.db.browseFlip = self:GetChecked() or nil
     B.Refresh()
   end)
+  B.LabelClicks(flip, label3)
+  B.Help(flip, { "Below vendor", "Only list auctions you can buy and sell to a vendor for more",
+    "The Vendor + column shows the gain on each. With Below also ticked, a row matching "
+    .. "either shows." })
   f.below, f.pct, f.flip = below, pct, flip
   return g
 end
@@ -525,12 +783,26 @@ function B.Build(ah)
   go:SetPoint("LEFT", search, "RIGHT", 6, 0)
   go:SetText(SEARCH or "Search")
   go:SetScript("OnClick", function() B.Search(search:GetText()) end)
+  f.go = go
+  local searchHelp = { "Search", "Type part of an item name and press Enter. Empty: "
+    .. "everything up.", "Each item found is read one at a time (Blizzard throttles searches), "
+    .. "so a broad search takes a while. The first " .. MAX_ITEMS .. " items are read." }
+  B.Help(search, searchHelp)
+  B.Help(go, function()
+    if state.view == "patterns" then
+      return { "Search patterns", "Recipe patterns matching the box; empty: every one up" }
+    end
+    return searchHelp
+  end)
 
   local patterns = Check(f, "Patterns", go, 12)
   patterns:SetScript("OnClick", function(self)
     B.SetView(self:GetChecked() and "patterns" or "items")
     B.Search(search:GetText())
   end)
+  B.Help(patterns, { "Patterns", "List recipe patterns on the AH, judged for your professions",
+    "Each gets the Craft panel's verdict, paying its buyout to learn it. Watched patterns "
+    .. "(worth learning) are starred and show even when not up. Untick for items again." })
   f.patterns = patterns
 
   f.filters = { items = BelowFilter(f, patterns.label) }
@@ -542,6 +814,10 @@ function B.Build(ah)
   action:SetSize(100, 22)
   action:SetPoint("TOPRIGHT", -4, -4)
   action:SetScript("OnClick", function() B.View().action.run(state.selected) end)
+  B.Help(action, function()
+    local a = B.View().action
+    return a.help and a.help(state.selected)
+  end)
   f.action, f.buy = action, action
 
   local list = CreateFrame("Frame", nil, f, "InsetFrameTemplate")
@@ -552,6 +828,12 @@ function B.Build(ah)
   bg:SetPoint("TOPLEFT", 3, -3)
   bg:SetPoint("BOTTOMRIGHT", -3, 3)
   f.list = list
+  f.note = list:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  f.note:SetPoint("CENTER", 0, 10)
+  f.note:SetWidth(460)
+  f.note:SetJustifyH("CENTER")
+  f.note:SetSpacing(3)
+  f.note:SetTextColor(0.85, 0.85, 0.85)
 
   f.headers = {}
   for name, view in pairs(B.VIEWS) do
@@ -587,6 +869,7 @@ function B.Build(ah)
   f.range:SetPoint("BOTTOMRIGHT", -6, 4)
   f:SetScript("OnShow", B.Draw)
   state.sort, state.desc = B.View().sort, B.View().desc or false
+  for _, fn in ipairs(B.onBuild) do fn(f) end
   return f
 end
 
@@ -609,6 +892,16 @@ local function Hook()
   tab.displayMode = MODE
   tab:SetPoint("LEFT", last, "RIGHT", -15, 0)
   PanelTemplates_TabResize(tab, 20, nil, 70)
+  B.Help(tab, { "Meionomics", "Auctions with prices judged: bargains, your craft shopping list, "
+    .. "gear upgrades and recipe patterns" })
+  -- TSM's tabs (LibAHTab) hang off whichever tab was last when TSM made them: if that was
+  -- before ours, both sat on Blizzard's Auctions tab, overlapping. Theirs follow ours.
+  local lib = LibStub and LibStub("LibAHTab-1-0", true)
+  local root = lib and lib.internalState and lib.internalState.rootFrame
+  if root then
+    root:ClearAllPoints()
+    root:SetPoint("TOPLEFT", tab, "TOPRIGHT")
+  end
   PanelTemplates_SetNumTabs(ah, #ah.Tabs)
   ah.tabsForDisplayMode[MODE] = #ah.Tabs
   ah.meioTab = tab

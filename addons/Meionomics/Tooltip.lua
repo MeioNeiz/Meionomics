@@ -12,8 +12,9 @@ local T = {}
 M.Tooltip = T
 
 T.style = {
-  accent = "f2c94c", grey = "9a9a9a", dim = "6f6f6f", good = "4fe36a", bad = "ff5a5a",
-  warn = "ffa64d",
+  accent = "f2c94c", grey = "b4b4b4", dim = "959595", good = "4fe36a", bad = "ff5a5a",
+  -- pink, not orange or yellow: those read as recipe difficulty
+  warn = "ff80c8",
   label = { 0.78, 0.78, 0.78 }, value = { 1, 1, 1 },
   sep = " · ", indent = "  ",
   pctMark = 0.15,   -- min buyout this far under / over market value gets coloured
@@ -28,6 +29,11 @@ T.FIELDS = {
     tip = "Cheapest auction up now, and how many are up" },
   { key = "vsMarket", name = "Min buyout vs market", on = true,
     tip = "How far the cheapest auction is under or over market value" },
+  { key = "sellDay", name = "Sells in a day", on = true,
+    tip = "The best price that still sells within a day about 4 times in 5: a little under the "
+      .. "cheapest rival, or above a dip that a day's sales will clear. Learnt from your own "
+      .. "posts (a default guess until about 20 have ended). \"dip\" after the AH price: the "
+      .. "cheapest is a temporary low" },
   { key = "soldPerDay", name = "Region sold per day", on = true,
     tip = "How many sell per day across the region" },
   { key = "saleRate", name = "Region sale rate", on = false,
@@ -68,13 +74,34 @@ local function Join(...)
   return table.concat(out, C("grey", S.sep))
 end
 
-local function Profit(p)
+-- e: R.Evaluate's; on prices older than R.STALE the figure is dimmed and says how old
+local function Profit(p, e)
   if not p then return C("grey", "?") end
+  if e and e.stale then
+    return C("dim", p >= 0 and "+" or "") .. M.Money(p, S.dim, S.dim)
+      .. C("warn", " old " .. R.AgeShort(e.age))
+  end
   return p >= 0 and C("good", "+" .. M.Money(p)) or C("bad", "-" .. M.Money(-p))
 end
 
-local function PerDay(n) return n and (M.Count(n) .. C("grey", "/day in region")) end
+-- how old the AH price is ("3m ago" ours, "2d old" app data, its source named with full): a
+-- warning past R.STALE
+local function AgeTag(d, full)
+  if not d.age then return "" end
+  local text = R.AgeShort(d.age) .. (d.ageOwn and " ago" or full and " old (TSM)" or " old")
+  return " " .. C(d.age > R.STALE and "warn" or "dim", text)
+end
+
+-- red under the "nobody buys it" lines that also make crafts "Slow seller" (Prices.lua)
+local function Sold(n)
+  local key = n < P.SELLS_PER_DAY and "bad" or n < 5 and "warn" or "good"
+  return C(key, M.Count(n))
+end
+local function PerDay(n) return n and (Sold(n) .. C("grey", "/day in region")) end
 local function Pct(f) return ("%d%%"):format(math.floor(f * 100 + 0.5)) end
+local function Rate(f)
+  return C(f < P.SELLS_RATE and "bad" or f < 0.25 and "warn" or "good", Pct(f))
+end
 
 -- min buyout against market value: "-8%"
 local function VsMarket(d)
@@ -102,6 +129,13 @@ end
 -- by any character: alts craft for each other
 local function Known(rec) return rec.known and next(rec.known) ~= nil end
 local function NotKnown(rec) return Known(rec) and "" or C("dim", " (not known)") end
+
+-- in its difficulty colour at your rank, like the profession window
+local function RecName(rec)
+  local hex = M.Craft and M.Craft.DiffHex and M.Craft.DiffHex(rec)
+  local name = rec.name or "?"
+  return hex and ("|cff" .. hex .. name .. "|r") or name
+end
 -- a recipe item's recipe for this character: known, learnable, too low, or past grey. nil when
 -- the profession isn't this character's (then NotKnown says whether anyone knows it)
 local function LearnState(rec)
@@ -133,12 +167,16 @@ local function Plural(n, word) return n .. " " .. word .. (n == 1 and "" or "s")
 
 ------------------------------------------------------------------------------ Facts
 -- bound: soulbound now (a bag or equipped item); nil goes by the bind type
-local function Gather(itemID, bound)
-  local d = { id = itemID }
-  for k in pairs(P.SOURCES) do d[k] = P.Get(itemID, k) end
+-- key: an itemID, or a variant key (P.Id) for a random-suffix item we have AH data on
+-- link: the item as shown, for the Best line's upgrade check (a suffix's stats)
+local function Gather(key, bound, link)
+  local itemID = P.Id(key)
+  local d = { id = itemID, variant = key ~= itemID }
+  for k in pairs(P.SOURCES) do d[k] = P.Get(key, k) end
   d.vendor = P.Get(itemID, "vendor")
   d.inv = M.Inventory.Get(itemID)
   d.hasAH = d.minBuyout or d.market or d.regionMarket
+  d.age, d.ageOwn = P.Age(key)
   local classID = select(12, C_Item.GetItemInfo(itemID))
   if classID == 2 or classID == 4 then d.disenchant = P.Disenchant(itemID) end
   d.convert = P.Convert(itemID)
@@ -147,8 +185,9 @@ local function Gather(itemID, bound)
   -- IsBound is true for quest items too: their own reason says more
   if ok and bound then ok, why = false, "soulbound" end
   if not ok then d.hasAH, d.noAH = nil, why end
-  d.act = P.BestAction(itemID, bound)
-  d.ev = d.hasAH and (d.act and d.act.ev or P.Evidence(itemID)) or nil
+  d.act = P.BestAction(key, bound, link)
+  d.ev = d.hasAH and (d.act and d.act.ev or P.Evidence(key)) or nil
+  d.sd = d.hasAH and M.SellDay.Quote(key) or nil
   R.ResetCache()
   local recs = R.Making(itemID)
   if recs then
@@ -244,6 +283,21 @@ local function HistoryRows(rows, ev, Money, totals)
 end
 
 -- compact: self-labelled snippets, short ones two to a line, wide ones (recipe names) alone
+-- a recipe's materials, one row each: "  4x Bolt of Mageweave (have 12)", their cost
+local function MatRows(rec)
+  local out = {}
+  for _, m in ipairs(rec.mats or {}) do
+    local h = M.Craft.Have(m[1])
+    local mine = h.bags + h.bank + h.mail
+    local price = R.MatPrice(m[1])
+    out[#out + 1] = { C("grey", ("  %dx "):format(m[2]))
+      .. (C_Item.GetItemNameByID(m[1]) or ("item " .. m[1]))
+      .. (mine > 0 and C("dim", (" (have %d)"):format(mine)) or ""),
+      price and M.Money(price * m[2]) or C("grey", "no price") }
+  end
+  return out
+end
+
 local function CompactFacts(d, on)
   local short, wide = {}, {}
   local function Short(text) if text then short[#short + 1] = text end end
@@ -252,18 +306,34 @@ local function CompactFacts(d, on)
     local vs = on.vsMarket and VsMarket(d)
     if on.buyout then
       local up = d.numAuctions and C("dim", " (" .. d.numAuctions .. ")") or ""
-      Short(d.minBuyout and (C("grey", "AH ") .. M.Money(d.minBuyout) .. (vs and (" " .. vs) or "")
-        .. up) or C("grey", "AH none up"))
+      local dip = d.sd and (d.sd.dip and C("warn", " dip") or d.sd.jump and C("warn", " jump"))
+        or ""
+      Short((d.minBuyout and (C("grey", "AH ") .. M.Money(d.minBuyout)
+        .. (vs and (" " .. vs) or "") .. dip .. up) or C("grey", "AH none up")) .. AgeTag(d))
     elseif vs then
       Short(C("grey", "vs market ") .. vs)
     end
     if on.soldPerDay and d.soldPerDay then
-      local rate = on.saleRate and d.saleRate and (C("grey", S.sep) .. Pct(d.saleRate)) or ""
+      local rate = on.saleRate and d.saleRate
+        and (C("grey", S.sep) .. Rate(d.saleRate) .. C("grey", " sell")) or ""
       Short(PerDay(d.soldPerDay) .. rate)
     elseif on.saleRate and d.saleRate then
-      Short(Pct(d.saleRate) .. C("grey", " sell"))
+      Short(Rate(d.saleRate) .. C("grey", " sell"))
     end
     if d.ev then Short(C("grey", "Conf ") .. C(LEVEL[d.ev.level][1], LEVEL[d.ev.level][2])) end
+  end
+  if on.sellDay and d.sd then
+    if d.sd.price then
+      -- with a Best line the AH line (and its dip mark) isn't shown
+      local dip = d.act and (d.sd.dip and C("warn", " dip") or d.sd.jump and C("warn", " jump"))
+        or ""
+      Short(C("grey", "Day ") .. M.Money(d.sd.price)
+        .. C("dim", " (" .. M.SellDay.Odds(d.sd.P) .. ")") .. dip)
+    elseif d.sd.slow then
+      Short(C("warn", "Slow seller"))
+    end
+  end
+  if d.hasAH and not d.act then
     if on.market and d.market then Short(C("grey", "Market ") .. M.Money(d.market)) end
     if on.regionMarket and d.regionMarket then
       Short(C("grey", "Region ") .. M.Money(d.regionMarket))
@@ -290,18 +360,33 @@ local function CompactFacts(d, on)
   end
   local rec, e = d.craft, d.e
   if on.craft and rec then
-    local mats = C("grey", "mats ") .. M.Money(e.complete and e.cost or nil)
     -- the verdict line already says "Known"
     local what = d.teaches and not (d.act and d.act.verb == "known") and TeachesShort(rec)
       or ((rec.prof or "Craft") .. NotKnown(rec))
-    wide[#wide + 1] = { what, rec.out and Join(mats, Profit(e.profit)) or mats }
+    -- what the mats cost is Shift's only
+    local right
+    if rec.out then
+      local sells = e.noAH and C("grey", "no AH price")
+        or e.value and (C("grey", "sells ") .. M.Money(e.value))
+      right = Join(sells, not e.noAH and Profit(e.profit, e) or nil)
+    end
+    wide[#wide + 1] = { what, right ~= "" and right or nil }
+    -- a pattern: is it worth buying? demand for what it makes, crafts to earn its price back
+    if d.teaches and rec.out then
+      local perDay = P.Get(rec.out, "soldPerDay")
+      local cost = d.minBuyout or d.market
+      local payback = M.Recipes.Payback(cost, e.profit)
+      local demand = perDay and (C("grey", "Made item ") .. PerDay(perDay))
+      local back = payback and (C("grey", "pays back in ") .. Plural(payback, "craft"))
+      if demand or back then wide[#wide + 1] = { demand or " ", back } end
+    end
   end
   -- uses[1] is the most profitable: when even that loses money the line is noise
   local top = d.uses and d.uses[1]
   local best = top and top.e.profit > 0 and (d.bestKnown or top)
   if on.usedIn and best and not (d.act and d.act.verb == "craft") then
-    wide[#wide + 1] = { C("grey", "Best use: ") .. (best.rec.name or "?")
-      .. NotKnown(best.rec), Profit(best.e.profit) }
+    wide[#wide + 1] = { C("grey", "Best use: ") .. RecName(best.rec)
+      .. NotKnown(best.rec), Profit(best.e.profit, best.e) }
   end
   if d.group then wide[#wide + 1] = { C("grey", "TSM group: ") .. d.group } end
   return short, wide
@@ -313,8 +398,8 @@ local function PriceAfter(d)
   local pct = on.vsMarket and d.minBuyout and d.market
     and ("%+d%%"):format(math.floor((d.minBuyout / d.market - 1) * 100 + 0.5))
   local up = on.buyout and d.numAuctions and ("(" .. d.numAuctions .. ")")
-  if pct and up then return C("dim", pct .. " " .. up) end
-  return (pct or up) and C("dim", pct or up)
+  local text = (pct and up) and (pct .. " " .. up) or pct or up
+  return (text and C("dim", text) or "") .. AgeTag(d)
 end
 
 local function Compact(d)
@@ -353,18 +438,24 @@ local function Ledger(d)
   if d.noAH then Add(rows, "row", C("dim", "Can't be auctioned: " .. d.noAH)) end
   local ev = d.ev
   if d.hasAH then
+    if d.variant then
+      Add(rows, "row", C("dim", "AH prices for this suffix" .. S.sep .. "region sales: all"))
+    end
     local sellers = ev and ev.sellers and (", " .. Plural(ev.sellers, "seller")) or ""
     local up = d.numAuctions and C("dim", " (" .. d.numAuctions .. " up" .. sellers .. ")") or ""
     if d.minBuyout then
       local vs = VsMarket(d)
-      Money("Min buyout" .. up .. (vs and (" " .. vs) or ""), d.minBuyout)
+      Money("Min buyout" .. up .. (vs and (" " .. vs) or "") .. AgeTag(d, true), d.minBuyout)
     else
       Add(rows, "row", "Min buyout", C("grey", "none up"))
     end
     Money("Market value", d.market)
+    M.Ledger.SellDayRows(rows, d.sd)
     if d.soldPerDay then
-      local rate = d.saleRate and C("dim", " (" .. Pct(d.saleRate) .. " sell)") or ""
-      Add(rows, "row", "Region sold/day" .. rate, M.Count(d.soldPerDay))
+      -- colour codes don't nest: the dim text is closed around the coloured rate
+      local rate = d.saleRate
+        and (C("dim", " (") .. Rate(d.saleRate) .. C("dim", " sell)")) or ""
+      Add(rows, "row", "Region sold/day" .. rate, Sold(d.soldPerDay))
     end
     if ev then EvidenceRows(rows, ev, Money) end
   end
@@ -398,7 +489,7 @@ local function Ledger(d)
   local rec, e = d.craft, d.e
   -- a recipe item: the crafting panel's recipe block (skill-up bands, learning cost, known by)
   local recipeRows = rec and d.teaches
-    and M.Craft.RecipeRows(rec.id, { noHead = true,
+    and M.Craft.RecipeRows(rec.id, { noHead = true, mats = true,
       outLabel = "|cff" .. M.Action.LABEL .. "Output:|r " })
   if recipeRows then
     Add(rows, "head", Teaches(rec))
@@ -407,11 +498,13 @@ local function Ledger(d)
     Add(rows, "head", (d.teaches and ("Teaches " .. (rec.name or "?"))
       or ((rec.prof or "Craft") .. " craft")) .. NotKnown(rec))
     Add(rows, "row", "Materials", M.Money(e.complete and e.cost or nil))
+    for _, m in ipairs(MatRows(rec)) do Add(rows, "row", m[1], m[2]) end
     if rec.out then
       local made = R.Made(rec)
       Add(rows, "row", e.where == "vendor" and "Sells to vendor" or "Sells, after 5% cut",
         M.Money(e.value) .. (made > 1 and C("dim", " (" .. made .. " made)") or ""))
-      Add(rows, "row", "Profit", Join(Profit(e.profit), PerDay(P.Get(rec.out, "soldPerDay"))))
+      Add(rows, "row", "Profit",
+        Join(Profit(e.profit, e), PerDay(P.Get(rec.out, "soldPerDay"))))
     end
     local who = R.KnownBy(rec)
     if #who > 0 then Add(rows, "row", C("dim", "Known by " .. table.concat(who, ", "))) end
@@ -434,9 +527,69 @@ local function Ledger(d)
       end
     end
     for _, u in ipairs(shown) do
-      Add(rows, "row", (u.rec.name or "?") .. NotKnown(u.rec),
-        Join(Profit(u.e.profit), PerDay(P.Get(u.rec.out, "soldPerDay"))))
+      Add(rows, "row", RecName(u.rec) .. NotKnown(u.rec),
+        Join(Profit(u.e.profit, u.e), PerDay(P.Get(u.rec.out, "soldPerDay"))))
     end
+  end
+  return rows
+end
+
+------------------------------------------------------------------------------ Writs
+-- Forever's Craftsman's Writs each start a quest asking for the item they name. Found by
+-- recipe spell name (client data, always there), else by output name (only once cached)
+local WRIT = "^Craftsman's Writ: (.+)$"
+local byCraftName
+
+local function CraftsNamed(name)
+  if not byCraftName then
+    byCraftName = {}
+    local function Index(key, id)
+      if type(key) ~= "string" then return end
+      local ids = byCraftName[key] or {}
+      byCraftName[key] = ids
+      for _, have in ipairs(ids) do if have == id then return end end
+      ids[#ids + 1] = id
+    end
+    for id, d in pairs(M.CraftData or {}) do
+      if d[7] ~= 0 then
+        Index(C_Spell.GetSpellName(id), id)
+        Index(C_Item.GetItemNameByID(d[7]), id)
+      end
+    end
+    for _, ids in pairs(byCraftName) do table.sort(ids) end
+  end
+  return byCraftName[name]
+end
+
+-- recipe spell for a writ: the variant you know, else the first
+local function WritRecipe(itemID)
+  local name = C_Item.GetItemNameByID(itemID)
+  local want = type(name) == "string" and name:match(WRIT)
+  local ids = want and CraftsNamed(want)
+  if not ids then return nil, want end
+  for _, id in ipairs(ids) do
+    local rec = M.Craft.Recipe(id)
+    if rec and R.KnownHere(rec) then return id end
+  end
+  return ids[1]
+end
+
+local function WritRows(itemID, full)
+  local id, want = WritRecipe(itemID)
+  if not id then
+    return want and { { kind = "head", left = "Writ wants " .. want },
+      { kind = "row", left = C("dim", "no recipe found for it") } } or nil
+  end
+  local rec = M.Craft.Recipe(id)
+  local rows = M.Craft.RecipeRows(id, { noHead = true, short = not full, full = full })
+  if not (rec and rows) then return nil end
+  local h = rec.out and M.Craft.Have(rec.out)
+  local mine = h and (h.bags + h.bank + h.mail) or 0
+  local state = R.KnownHere(rec) and C("good", "known") or C("bad", "not known")
+  table.insert(rows, 1, { kind = "head", left = "Writ wants " .. (rec.name or want),
+    right = C("dim", (rec.prof or "?") .. " ") .. state })
+  if mine > 0 then
+    table.insert(rows, 2, { kind = "row", left = "You have", right = tostring(mine) })
   end
   return rows
 end
@@ -503,6 +656,19 @@ end
 T.bestLine = setmetatable({}, { __mode = "k" })
 T.bestLast = setmetatable({}, { __mode = "k" })
 
+-- one "Shift: more" per tooltip across our addons (conventions: tooltip.meioShiftHint)
+local hintHooked = {}
+local function ShiftHint(tt)
+  if tt.meioShiftHint then return end
+  tt.meioShiftHint = true
+  if not hintHooked[tt] then
+    hintHooked[tt] = true
+    pcall(tt.HookScript, tt, "OnTooltipCleared", function(t) t.meioShiftHint = nil end)
+  end
+  tt:AddLine("|cff999999Shift: more|r")
+end
+T.ShiftHint = ShiftHint
+
 function T.Render(tt, rows)
   Release(tt)
   local headed = rows[1] and rows[1].kind == "head"
@@ -511,6 +677,8 @@ function T.Render(tt, rows)
   for _, r in ipairs(rows) do
     if r.kind == "gap" then
       tt:AddLine(" ")
+    elseif r.kind == "hint" then
+      ShiftHint(tt)
     elseif r.kind == "head" then
       tt:AddDoubleLine(C("accent", r.left), r.right or " ")
     else
@@ -554,15 +722,41 @@ end
 -- Rows for an item, or nil when there's nothing to say. full: the Shift ledger; qty: unused
 -- (prices are per item); bound: soulbound now, nil goes by the bind type; shopping: on sale at
 -- a merchant (compact: no Best line). For other addons drawing the block their own way.
-function T.Rows(itemID, full, qty, bound, shopping)
-  local d = Gather(itemID, bound)
+local function BuildRows(itemID, full, bound, shopping, link)
+  local d = Gather(itemID, bound, link)
   d.shopping = shopping
-  if not (d.hasAH or d.inv or d.craft or d.usedIn or d.vendor or d.disenchant or d.convert
-    or d.group or d.act) then
-    return nil
+  local rows
+  if d.hasAH or d.inv or d.craft or d.usedIn or d.vendor or d.disenchant or d.convert
+    or d.group or d.act then
+    if full then rows = Ledger(d) else rows = Compact(d) end
   end
-  if full then return Ledger(d) end
-  return Compact(d)
+  local writ = WritRows(P.Id(itemID), full)
+  if not writ then return rows end
+  rows = rows or {}
+  for _, r in ipairs(writ) do rows[#rows + 1] = r end
+  return rows
+end
+
+-- Blizzard re-sets bag and merchant tooltips every 0.2s while hovered, and Gather re-scores
+-- every recipe an item feeds: that stuttered the game and made the tooltip shimmer
+local MEMO_SECONDS = 1
+local memo, memoAt = {}, 0
+
+-- link: the item as shown (suffix, enchant), for the Best line's upgrade check
+function T.Rows(itemID, full, qty, bound, shopping, link)
+  local now = GetTime()
+  if now - memoAt > MEMO_SECONDS then
+    wipe(memo)
+    memoAt = now
+  end
+  local key = strjoin("|", itemID, tostring(full), tostring(bound), tostring(shopping),
+    link and link:match("item:([^|]*)") or "")
+  local rows = memo[key]
+  if rows == nil then
+    rows = BuildRows(itemID, full, bound, shopping, link) or false
+    memo[key] = rows
+  end
+  return rows or nil
 end
 
 -- a bag or equipped item that has bound (BoE once worn); nil elsewhere
@@ -588,13 +782,27 @@ pcall(M.On, "AUCTION_HOUSE_SHOW", function() ahOpen = true end)
 pcall(M.On, "AUCTION_HOUSE_CLOSED", function() ahOpen = false end)
 local function AHFull() return ahOpen and M.db.ahDetail == true end
 
+-- the shown item's random-suffix variant (Auction.lua A.Key) when our scans have seen it, so its
+-- prices are its own rather than the whole itemID's; else itemID. Second: the shown link
+local function PriceKey(tt, itemID)
+  local A = M.Auction
+  if not (A and TooltipUtil and TooltipUtil.GetDisplayedItem) then return itemID end
+  local ok, _, link = pcall(TooltipUtil.GetDisplayedItem, tt)
+  if not ok or type(link) ~= "string" or Secret(link) then return itemID end
+  local key = A.Key(link)
+  if A.IsVariant(key) and A.Base(key) == itemID and A.Get(key) then return key, link end
+  return itemID, link
+end
+
 -- the block for itemID at the end of tt as it is now. Set T.external = true to place it yourself
 -- (a tooltip tidier calling T.Draw after its own lines); Meionomics then stops adding it.
 function T.Draw(tt, itemID)
+  if not M.toggles.tooltips() then return Release(tt) end
   local full = AHFull() or IsShiftKeyDown()
   local info = tt.GetProcessingTooltipInfo and tt:GetProcessingTooltipInfo()
   local shopping = info and info.getterName == "GetMerchantItem"
-  local rows = T.Rows(itemID, full, 1, HoveredBound(tt), shopping)
+  local key, link = PriceKey(tt, itemID)
+  local rows = T.Rows(key, full, 1, HoveredBound(tt), shopping, link)
   if rows then T.Render(tt, rows) else Release(tt) end
 end
 
@@ -604,9 +812,21 @@ local function OnItem(tt, data)
   T.Draw(tt, data.id)
 end
 
+-- TooltipFold adds Leveling BiS's verdict to item tooltips (it sets blockOff): on a trainer
+-- line showing the item made, a second BiS row would only contradict it
+local function FoldsBis(tt)
+  local api = ForeverLevelingBiS_API
+  if not (api and api.blockOff and TooltipUtil and TooltipUtil.GetDisplayedItem) then
+    return false
+  end
+  local ok, _, link = pcall(TooltipUtil.GetDisplayedItem, tt)
+  return ok and type(link) == "string"
+end
+
 -- trainer lines that teach a recipe: the crafting panel's recipe block (CraftRows.lua); Shift lists
 -- every material. Item services (a recipe whose tooltip is its output) get the item block.
 local function OnTrainer(tt)
+  if not M.toggles.tooltips() then return end
   local info = tt.GetProcessingTooltipInfo and tt:GetProcessingTooltipInfo()
   if not (info and info.getterName == "GetTrainerService" and info.getterArgs) then return end
   local index = info.getterArgs[1]
@@ -615,7 +835,8 @@ local function OnTrainer(tt)
   -- RecipeRows falls back to DB2 data, so record on what is missing: the fee and skill
   local rec = R.All()[id]
   if not (rec and rec.train) then R.RecordTrainerService(index) end
-  local rows = M.Craft.RecipeRows(id, { short = true, full = IsShiftKeyDown() })
+  local rows = M.Craft.RecipeRows(id, { short = true, full = IsShiftKeyDown(),
+    noBis = FoldsBis(tt), atTrainer = true })
   if not rows then return end
   tt:AddLine(" ")
   T.Render(tt, rows)
@@ -648,7 +869,8 @@ end)
 -- Our rebuild runs Blizzard's whole tooltip build tainted, so only where nothing else redraws:
 -- owners with UpdateTooltip (bag slots, merchant) are re-set by Blizzard every 0.2s anyway.
 M.On("MODIFIER_STATE_CHANGED", function(_, key)
-  if not (key == "LSHIFT" or key == "RSHIFT") or not GameTooltip:IsShown() or AHFull() then
+  if not (key == "LSHIFT" or key == "RSHIFT") or not GameTooltip:IsShown() or AHFull()
+    or not M.toggles.tooltips() then
     return
   end
   local owner = GameTooltip:GetOwner()

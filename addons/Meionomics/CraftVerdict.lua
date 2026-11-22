@@ -1,10 +1,9 @@
 -- One plain verdict per recipe, with the realistic numbers behind it: the Profit, Skill-up and
 -- Route views and the recipe tooltip share these.
--- Sales here: the region's sold/day x REALM_SHARE, scaled down when this realm already has
--- more up than CROWD_DAYS of that. Internal only: text shows measured region sales and what
--- is up here. What sells within a week goes at the AH value (after the cut), the rest to a
+-- Sales here: the region's sold/day x REALM_SHARE, or his own recent sales when higher.
+-- Internal only: text shows measured region sales and what is up here. What sells within a week goes at the AH value (after the cut), the rest to a
 -- vendor.
--- Held materials (bags, then bank) cost what selling them would bring: the last units of the
+-- Held materials (bags, bank, mail; not alts) cost what selling them would bring: the last units of the
 -- pile, at that same realistic value, so slow sellers cost about their vendor price.
 -- Batches: Profit sells a week's worth (at least 1 craft), Skill-up crafts until the recipe
 -- changes colour; held materials cover a batch first.
@@ -24,7 +23,6 @@ C.Value = V
 -- the region data covers few realms: Azure Silk Belt sells ~1 a day region-wide while this
 -- realm alone has 72 up
 local REALM_SHARE = 0.2
-local CROWD_DAYS = 3
 local WEEK = 7
 local MAX_BATCH = 50
 local SLOW_PER_DAY = 0.5   -- output selling slower than this: "Slow seller"
@@ -32,18 +30,18 @@ local NOT_WORTH_DAYS = 21  -- learning that takes longer to pay back: "Not worth
 local TIE = 0.05           -- costs this close count as the same; your own mats win
 
 local VERDICTS = {
-  ["do"] = { 1, "Do it", "Do it", "1eff00" },
+  ["do"] = { 1, "Do it", "Do it", "4fe36a" },
   level = { 2, "Worth it if levelling", "If levelling", "ffd100" },
   slow = { 3, "Slow seller", "Slow seller", "e0a050" },
   learn = { 4, "Not worth learning", "Don't learn", "b08cff" },
-  loss = { 5, "Loses money", "Loses money", "ff2020" },
-  costly = { 5, "Costly skill-ups", "Costly", "ff2020" },
-  nopattern = { 6, "Pattern not available", "No pattern", "9d9d9d" },
-  none = { 7, "No price", "No price", "808080" },
+  loss = { 5, "Loses money", "Loses money", "ff5a5a" },
+  costly = { 5, "Costly skill-ups", "Costly", "ff5a5a" },
+  nopattern = { 6, "Pattern not available", "No pattern", "b4b4b4" },
+  none = { 7, "No price", "No price", "a0a0a0" },
 }
 
 local function Hex(c, text) return "|cff" .. c .. text .. "|r" end
-local function Dim(text) return Hex("8a8a8a", text) end
+local function Dim(text) return Hex("a8a8a8", text) end
 local function Gold(c)
   if c < 0 then return "-" .. M.Money(-c) end
   return M.Money(c)
@@ -59,7 +57,10 @@ function R.ResetCache()
   wipe(sales)
 end
 
--- { day (sold here per day), s (P.SellRate), bound, clear (days for what is up here to sell) }
+-- { day (sold here per day), s (P.SellRate), own (his sales a day, P.OwnPerDay), bound,
+--   clear (days for what is up here to sell) }
+-- A crowded AH doesn't cut his share: he lists at the cheapest rival (R.SellValue) and buyers
+-- take the cheapest. Scaling by it put White Bandit Mask at 0.19/day; he sold 5/day.
 function V.Sales(itemID)
   local v = sales[itemID]
   if v then return v end
@@ -69,8 +70,8 @@ function V.Sales(itemID)
     local s = P.SellRate(itemID)
     local day = s and s.perDay and s.perDay * REALM_SHARE or 0
     local clear = s and s.listed and day > 0 and s.listed / day or nil
-    if clear and clear > CROWD_DAYS then day = day * CROWD_DAYS / clear end
-    v = { day = day, s = s, clear = clear }
+    local own = P.OwnPerDay(itemID)
+    v = { day = math.max(day, own or 0), s = s, own = own, clear = clear }
   end
   sales[itemID] = v
   return v
@@ -105,13 +106,29 @@ function V.Mats(rec, n)
   for _, mat in ipairs(rec.mats) do
     local id, want = mat[1], mat[2] * n
     local h = C.Have(id)
-    local pile = h.bags + h.bank
+    local pile = h.bags + h.bank + h.mail
     local use = math.min(want, pile)
     local price = use < want and BuyPrice(id)
     if use < want and not price then m.complete = false end
     m.cost = m.cost + V.HeldCost(id, pile, use) + (want - use) * (price or 0)
     m.held, m.need = m.held + use, m.need + want
     m.bags = m.bags + math.min(want, h.bags)
+  end
+  -- one station placement serves the whole batch (MAX_BATCH crafts fit in its 15 minutes)
+  local st = R.Station(rec)
+  if st then
+    m.station = st
+    for _, part in ipairs(st.parts) do
+      local h = C.Have(part.item)
+      local pile = h.bags + h.bank + h.mail
+      if pile > 0 then
+        m.cost = m.cost + V.HeldCost(part.item, pile, 1)
+      elseif part.price then
+        m.cost = m.cost + part.price
+      else
+        m.complete = false
+      end
+    end
   end
   return m
 end
@@ -139,10 +156,8 @@ function V.Fill(x, rank)
   local learn = x.learnCost
   local each = x.real.each
   if each then x.week = each * n - (learn or 0) end
-  if learn and learn > 0 and each and each > 0 then
-    x.payN = math.ceil(learn / each)
-    if s and s.day > 0 then x.payDays = x.payN * made / s.day end
-  end
+  x.payN = R.Payback(learn, each)
+  if x.payN and s and s.day > 0 then x.payDays = x.payN * made / s.day end
   if not (x.points and x.points > 0) then return end
   local ln = math.max(1, math.min(MAX_BATCH, math.ceil(x.span / x.points)))
   local lm = V.Mats(rec, ln)
@@ -288,7 +303,7 @@ local function JudgeProfit(x, ctx)
         return Make("level", Join(LearnText(x), PointText(per)), week,
           Join(LearnNote(x), PointNote(per)))
       end
-      return Make("learn", ("%s, %s"):format(LearnText(x), PayText(x)), week,
+      return Make("learn", Join(LearnText(x), PayText(x) or "never pays back"), week,
         Join(LearnNote(x), PayNote(x)))
     end
     if s and not s.bound and s.day < SLOW_PER_DAY then
@@ -388,18 +403,157 @@ function V.Before(a, b)
   return (a.rec.name or "") < (b.rec.name or "")
 end
 
+------------------------------------------------------------------------------ From held
+-- What his own mats (bags, bank, mail; not alts) earn crafted rather than sold as they are:
+-- one craft at a time, the known recipe earning most for the mats it uses, while that beats
+-- selling them. Held mats cost what selling them would bring (V.HeldCost: the scarce ones are
+-- rationed), the rest is bought, as long as held mats pay at least half. Outputs he already
+-- holds sell first.
+--   V.HeldProfit(list) -> { steps = { { x, crafts, value, heldCost, buy, gain, uses, buys (id ->
+--   units) } } (best
+--   first), crafts, value, heldCost, buy, gain, mats = { { id, used, bought } } }
+local HELD_MAX_CRAFTS = 300
+
+local function Pile(id)
+  local h = C.Have(id)
+  return h.bags + h.bank + h.mail
+end
+
+function V.HeldProfit(list)
+  local left, made, price = {}, {}, {}
+  local function Left(id)
+    if not left[id] then left[id] = Pile(id) end
+    return left[id]
+  end
+  local function Price(id)
+    if price[id] == nil then price[id] = BuyPrice(id) or false end
+    return price[id] or nil
+  end
+  local cands = {}
+  for _, x in ipairs(list) do
+    local rec = x.rec
+    if x.known and rec.out and rec.mats and not C.MissingTool(rec) then
+      for _, m in ipairs(rec.mats) do
+        if Left(m[1]) > 0 then
+          cands[#cands + 1] = { x = x, crafts = 0, value = 0, heldCost = 0, buy = 0, uses = {},
+            buys = {} }
+          break
+        end
+      end
+    end
+  end
+  -- the next craft of s: what it adds, its held mats' worth, what it buys; nil if it can't
+  local function Next(s)
+    local rec = s.x.rec
+    local held, buy, weight, any = 0, 0, 0, false
+    for _, m in ipairs(rec.mats) do
+      local id, n = m[1], m[2]
+      local use = math.min(n, Left(id))
+      local p = Price(id)
+      if use < n and not p then return nil end
+      if use > 0 then
+        local c = V.HeldCost(id, left[id], use)
+        held, any = held + c, true
+        weight = weight + math.max(c, use * (p or 0))
+      end
+      buy = buy + (n - use) * (p or 0)
+    end
+    if not any or buy > weight then return nil end
+    if s.crafts == 0 then
+      local st = R.Station(rec)
+      for _, part in ipairs(st and st.parts or {}) do
+        local pile = Left(part.item)
+        if pile > 0 then held = held + V.HeldCost(part.item, pile, 1)
+        elseif part.price then buy = buy + part.price
+        else return nil end
+      end
+    end
+    local out, each = rec.out, R.Made(rec)
+    if not made[out] then made[out] = Pile(out) end
+    local value = V.Worth(out, made[out] + each) - V.Worth(out, made[out])
+    return value, held, buy
+  end
+  local plan = { steps = {}, crafts = 0, value = 0, heldCost = 0, buy = 0, gain = 0, mats = {} }
+  local used, bought = {}, {}
+  for _ = 1, HELD_MAX_CRAFTS do
+    local best, bestScore, bv, bh, bb
+    for _, s in ipairs(cands) do
+      local value, held, buy = Next(s)
+      local gain = value and value - held - buy
+      if gain and gain > 0 then
+        local score = gain / (held + buy + 1)
+        if not bestScore or score > bestScore then
+          best, bestScore, bv, bh, bb = s, score, value, held, buy
+        end
+      end
+    end
+    if not best then break end
+    local rec = best.x.rec
+    if best.crafts == 0 then
+      local st = R.Station(rec)
+      for _, part in ipairs(st and st.parts or {}) do
+        if Left(part.item) > 0 then
+          left[part.item] = left[part.item] - 1
+          used[part.item] = (used[part.item] or 0) + 1
+        end
+      end
+    end
+    for _, m in ipairs(rec.mats) do
+      local id, n = m[1], m[2]
+      local use = math.min(n, Left(id))
+      left[id] = left[id] - use
+      used[id] = (used[id] or 0) + use
+      if use > 0 then best.uses[id] = (best.uses[id] or 0) + use end
+      if use < n then
+        bought[id] = (bought[id] or 0) + n - use
+        best.buys[id] = (best.buys[id] or 0) + n - use
+      end
+    end
+    made[rec.out] = made[rec.out] + R.Made(rec)
+    best.crafts = best.crafts + 1
+    best.value, best.heldCost, best.buy = best.value + bv, best.heldCost + bh, best.buy + bb
+    plan.crafts = plan.crafts + 1
+  end
+  for _, s in ipairs(cands) do
+    if s.crafts > 0 then
+      s.gain = s.value - s.heldCost - s.buy
+      plan.steps[#plan.steps + 1] = s
+      plan.value, plan.heldCost = plan.value + s.value, plan.heldCost + s.heldCost
+      plan.buy, plan.gain = plan.buy + s.buy, plan.gain + s.gain
+    end
+  end
+  table.sort(plan.steps, function(a, b)
+    if a.gain ~= b.gain then return a.gain > b.gain end
+    return a.x.rec.id < b.x.rec.id
+  end)
+  for id, n in pairs(used) do
+    plan.mats[#plan.mats + 1] = { id = id, used = n, bought = bought[id] or 0 }
+  end
+  for id, n in pairs(bought) do
+    if not used[id] then plan.mats[#plan.mats + 1] = { id = id, used = 0, bought = n } end
+  end
+  table.sort(plan.mats, function(a, b)
+    if a.used ~= b.used then return a.used > b.used end
+    return a.id < b.id
+  end)
+  return plan
+end
+
 ------------------------------------------------------------------------------ Outside the panel
 -- one profession judged as the panel's view does: ctx is set against the cheapest skill point
 -- among known and learnable recipes. C.List is the costly part: keep the result for a pass.
---   -> { rank, all, byRec, ctx }; rank nil when the profession isn't known
-function V.ForProf(prof, view, rank)
+--   -> { rank, all, byRec, ctx }; rank nil when the profession isn't known.
+-- whatIf { max }: a rank not his (the panel's what-if), every recipe in the client data
+function V.ForProf(prof, view, rank, whatIf)
   local max
-  if rank then
+  if whatIf then
+    max = whatIf.max
+  elseif rank then
     max = select(2, C.Rank(prof))
   else
     rank, max = C.Rank(prof)
   end
-  local c = { rank = rank, all = C.List(prof, "all", rank), byRec = {} }
+  local c = { rank = rank, all = C.List(prof, "all", rank, whatIf ~= nil), byRec = {} }
   local pool = {}
   for _, x in ipairs(c.all) do
     c.byRec[x.rec] = x
@@ -463,7 +617,7 @@ function V.Warm(prof)
     end
     if i < #recs then return C_Timer.After(0, Step) end
     warming[prof] = nil
-    ctxCache[prof] = { rank = rank, at = GetTime(),
+    ctxCache[prof] = { rank = rank, at = GetTime(), who = R.Viewer(),
       ctx = { view = "profit", best = best, levelling = max and rank < max } }
   end
   Step()
@@ -473,10 +627,11 @@ function V.JudgeOne(x)
   local prof = x.rec.prof
   if not prof then return nil end
   local hit = ctxCache[prof]
-  if not (hit and hit.rank == C.Rank(prof) and GetTime() - hit.at < CTX_KEEP) then
+  local fresh = hit and hit.rank == C.Rank(prof) and hit.who == R.Viewer()
+  if not (fresh and GetTime() - hit.at < CTX_KEEP) then
     V.Warm(prof)
   end
-  return hit and V.Judge(x, hit.ctx)
+  return hit and hit.who == R.Viewer() and V.Judge(x, hit.ctx) or nil
 end
 
 local function WarmAll()
