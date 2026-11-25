@@ -3,8 +3,9 @@
 -- present: the workbench scenarios seed their recipes that way.
 --   cost    materials at the cheapest listing in the newest data (our sighting or TSM's), else
 --           TSM's MatPrice, else market value; a vendor when cheaper
---   sells   market value less the 5% AH cut, or the vendor price if that is more; P.Evidence's
---           safe price instead when confidence in the market value isn't high
+--   sells   R.AHNet: the price that sells within a day against a fresh cheapest rival, else
+--           market value (P.Evidence's safe price when confidence isn't high) less the 5% cut;
+--           the vendor price if that is more
 --   profit  sells x number made - cost
 local _, M = ...
 local R = {}
@@ -82,32 +83,46 @@ function R.MatPrice(itemID)
   return cache[key] or nil
 end
 
--- what one sells for: after the AH cut, or to a vendor if that pays more; and where.
--- level: P.Evidence's confidence when the AH price counts; noAH: the AH has no price at all
-function R.SellValue(itemID)
-  local key = "s" .. itemID
-  if cache[key] == nil then
-    local ah = P.Best(itemID, db.sellPrice or DEFAULT_SELL, "market", "regionSale", "historical")
+-- the one AH value of a unit, net of cut and deposits, for every tooltip line and the planner
+-- -> net, level (P.Evidence's), day (true: the sells-in-a-day price, so not the safe one).
+-- key: an itemID or a variant key (P.Id); TSM price strings only know the base item
+function R.AHNet(itemID)
+  local ck = "n" .. itemID
+  if cache[ck] == nil then
+    local str = type(itemID) ~= "string" and (db.sellPrice or DEFAULT_SELL) or nil
+    local ah = P.Best(itemID, str, "market", "regionSale", "historical")
     local ev = ah and P.Evidence and P.Evidence(itemID)
     if ev and ev.level ~= "high" and ev.price and ev.price < ah then ah = ev.price end
     -- selling means pricing against the cheapest rival up now, whatever the averages say: our
     -- own sighting (with only ours up there's no rival), else TSM's latest snapshot of the
     -- realm's lowest buyout while it's fresh
     local live = P.Live(itemID)
-    local now = live and live.comp
+    local now = live and P.Current(itemID)
     if not live then
       local age = P.Age(itemID)
-      now = age and age <= R.STALE and P.Get(itemID, "minBuyout") or nil
+      now = age and age <= R.STALE and P.Current(itemID) or nil
     end
     -- the price that sells within a day (a dip doesn't drag it down), net of cut and deposits
     local sd = now and M.SellDay and M.SellDay.Quote(itemID, { comp = now })
     if now and now < (ah or math.huge) then ah = now end
     local net = sd and sd.v or ah and ah * AH_CUT
+    cache[ck] = net and { net, ev and ev.level, sd and sd.v and true or nil } or false
+  end
+  local v = cache[ck]
+  if v then return v[1], v[2], v[3] end
+end
+
+-- what one sells for: R.AHNet, or a vendor if that pays more; and where.
+-- level: P.Evidence's confidence when the AH price counts; noAH: the AH has no price at all
+function R.SellValue(itemID)
+  local key = "s" .. itemID
+  if cache[key] == nil then
+    local net, level = R.AHNet(itemID)
     local vendor = P.Get(itemID, "vendor")
     if vendor and (not net or vendor >= net) then
       cache[key] = { vendor, "vendor", nil, not net }
     elseif net then
-      cache[key] = { net, "ah", ev and ev.level }
+      cache[key] = { net, "ah", level }
     else
       cache[key] = false
     end
@@ -274,7 +289,9 @@ local function RecordService(i, prof)
     local req
     if GetTrainerServiceSkillReq then _, req = GetTrainerServiceSkillReq(i) end
     local cost = GetTrainerServiceCost and GetTrainerServiceCost(i) or 0
-    rec.train = { cost = cost, req = req, npc = UnitName("npc"), zone = GetRealZoneText() }
+    local npc = UnitName("npc")
+    if npc and canaccessvalue and not canaccessvalue(npc) then npc = nil end
+    rec.train = { cost = cost, req = req, npc = npc, zone = GetRealZoneText() }
   end
   return rec
 end
@@ -313,6 +330,8 @@ local function ScanMerchant()
   if not (GetMerchantNumItems and GetMerchantItemID) then return end
   local npc = UnitName("npc")
   if not npc then return end
+  -- inside an instance the name is secret: a secret table key errors
+  if canaccessvalue and not canaccessvalue(npc) then npc = "Vendor" end
   for i = 1, GetMerchantNumItems() do
     local id = GetMerchantItemID(i)
     local classID = id and select(6, C_Item.GetItemInfoInstant(id))
@@ -538,7 +557,7 @@ end
 -- CraftProfit keys characters "Name-Realm", and the realm name the client reports has changed
 -- over time ("CAMWOW EU4 Realm 8 PvP", "PvP"): this character is matched by first name
 local function ImportCraftProfit()
-  local src = CraftProfitDB and CraftProfitDB.recipes
+  local src = _G.CraftProfitDB and _G.CraftProfitDB.recipes
   if type(src) ~= "table" then return end
   local first = (UnitName("player") or ""):match("^%S+")
   for id, rec in pairs(src) do

@@ -81,7 +81,7 @@ local function Register()
   Header("Merchants", "Buttons under a vendor's window, shown only when they have work.")
   Toggle("MERCHANT_BUTTONS", db, "merchantButtons", nil, "Merchant buttons", "Buy queue mats "
     .. "(what the craft queue still needs from this vendor) and Sell junk (greys, and items a "
-    .. "vendor pays most for). Nothing is bought or sold without a click.")
+    .. "vendor pays most for, never gear). Nothing is bought or sold without a click.")
 
   Header("Auction house", "Scans, Sell tab prices and price history while the AH is open.")
   Toggle("AUTO_SCAN", db, "autoScan", nil, "AH scan on opening", "Scan every listing when you "

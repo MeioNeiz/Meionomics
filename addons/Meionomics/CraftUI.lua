@@ -1662,7 +1662,400 @@ VIEWS.route = {
 }
 end
 
-local VIEW_ORDER = { "profit", "skill", "queue", "find" }
+------------------------------------------------------------------------------ Flips
+-- Every flip the account can make (CraftChains.lua): materials bought or made the cheapest way
+-- by any character, the output sold, vendored or disenchanted. Built a slice a frame and kept
+-- FLIPS_KEEP seconds. Click queues the final craft when this character knows it; the queue's
+-- Cheapest shopping makes the intermediates.
+-- state.flips: scope (known | learnable | all: recipes counted), view (flips | profs: By
+-- profession, what learning each would add), prof (skill line the list is limited to), multi
+-- (chains only: more than one craft, a vendor or disenchant, or two characters), exits
+-- (ah/vendor/de shown), char (name: flips where that character crafts a step or
+-- disenchants), text
+do
+local DEFAULT = { scope = "known", view = "flips", multi = false,
+  exits = { ah = true, vendor = true, de = true } }
+local FLIPS_KEEP, FLIPS_SLICE_MS, BATCH_MAX, PROF_TIP_MAX = 120, 6, 10, 8
+local LEARN = "d8b24a"
+local flips, job   -- { at, list, key, now }; the build running
+R.OnUpdate(function() if flips then flips.at = -math.huge end end)
+local EXIT = { ah = "AH", vendor = "vendor", de = "disenchant" }
+local EXIT_VERB = { ah = "Sell on the AH", vendor = "Sell to a vendor", de = "Disenchant" }
+local LIMIT = { sells = "what sells here a day", mats = "what the AH has of the materials",
+  time = "an hour of crafting a day", cooldown = "the cooldowns" }
+local SCOPES = { { "known", "Known" }, { "learnable", "Learnable now" },
+  { "all", "Every recipe" } }
+local FLIP_COLUMNS = {
+  { "Flip", 134, "name", name = true,
+    tip = "What to craft; under it the chain and how it goes out",
+    more = "Every character's recipes, materials bought or crafted the cheapest way" },
+  { "Profit", 56, "each", tip = "Profit on one craft, the whole chain, after the AH cut",
+    more = "Each material bought or crafted, whichever is cheaper, by whichever character "
+      .. "can" },
+  { "Saves", 50, "saves", tip = "What crafting the materials saves on one craft",
+    more = "Profit over buying every material ready-made: the gain from combining "
+      .. "professions and characters. Only: the AH has no price for a material" },
+  { "Margin", 42, "margin", tip = "Profit as a share of what the materials cost" },
+  { "Per hour", 58, "hour", tip = "Profit an hour crafting nonstop",
+    more = "Every cast in the chain, disenchanting and posting; cooldowns cap it" },
+  { "Per day", 58, "day", tip = "Profit a day within an hour of crafting",
+    more = "As many as sell here a day, the AH has materials for, an hour or the cooldowns "
+      .. "allow" },
+  { "Steps", 34, "steps", tip = "Crafts in the chain, disenchanting counted" } }
+local PROF_COLUMNS = {
+  { "Profession", 168, "name", name = true,
+    tip = "A profession's recipes added to what your characters know",
+    more = "Under it who has it, or who has a free slot for it" },
+  { "Gain", 60, "gain", tip = "Profit a day added to your best 5 flips",
+    more = "A day's crafting taken as your 5 best flips per day, with this profession's "
+      .. "recipes against without" },
+  { "Best", 60, "best", tip = "Profit a day of the best flip needing one of its recipes" },
+  { "New", 40, "new", tip = "Flips needing one of its recipes" },
+  { "Skill", 40, "skill", tip = "Skill the recipes behind the gain need",
+    more = "Red: higher than any of your characters has" },
+  { "Learn", 48, "learn", tip = "Learning those recipes, trainer fees and patterns",
+    more = "Not counting levelling the profession" } }
+
+local function Key()
+  local s = state.flips
+  return s.view == "profs" and "profs" or s.scope
+end
+
+local function FlipsStatus()
+  if job and job.total > 0 then
+    return Hex(DIM, ("Pricing chains %d/%d"):format(job.done, job.total))
+  end
+  if job then return Hex(DIM, "Reading recipes...") end
+end
+
+local function FlipsData()
+  local fresh = flips and flips.key == Key() and GetTime() - flips.at < FLIPS_KEEP
+  if fresh or job then return flips end
+  local key = Key()
+  job = C.Chains.Start({ scope = state.flips.scope, byProf = key == "profs" })
+  local function Step()
+    if job.Step(FLIPS_SLICE_MS) then
+      -- an error keeps an empty list until FLIPS_KEEP passes: no rebuild on every refresh
+      flips = { at = GetTime(), list = job.list or {}, key = key, now = job.now }
+      job = nil
+      return UI.RefreshSoon()
+    end
+    if frame and frame:IsShown() and state.view == "flips" and not UI.said then
+      frame.status:SetText(FlipsStatus())
+    end
+    C_Timer.After(0, Step)
+  end
+  Step()
+  return flips
+end
+
+-- skill line -> profession name
+local function LineNames()
+  local out = {}
+  for name, line in pairs(C.Lines()) do out[line] = name end
+  return out
+end
+
+local function StepName(s)
+  if s.rec.convert then return s.rec.name end
+  return ItemName(s.rec.out)
+end
+
+-- the smallest batch (up to BATCH_MAX crafts) where every amount is whole: 2 Greater Magic
+-- Essences split for 3 wands, not 0.7 for 1
+local function Batch(f)
+  for n = 1, BATCH_MAX do
+    local whole = true
+    for _, s in ipairs(f.steps) do
+      local v = s.n * n
+      if math.abs(v - math.floor(v + 0.5)) > 0.01 then whole = false end
+    end
+    if whole then return n end
+  end
+  return 1
+end
+
+local function Qty(v)
+  if math.abs(v - math.floor(v + 0.5)) < 0.01 then return tostring(math.floor(v + 0.5)) end
+  return ("%.1f"):format(v)
+end
+
+local function Me() return UnitName("player") end
+
+local function LearnCost(f)
+  if f.learnCost then return Money(f.learnCost) end
+  return "?"
+end
+
+-- who could learn a recipe: now, after levelling, or nobody has the profession
+local function LearnWho(w)
+  if w.who then return Hex(ACCENT, w.who) .. Hex(DIM, " can learn it now") end
+  if w.best then
+    return Hex(DIM, ("%s has %s %d of %d"):format(w.best.name, w.prof or "it", w.best.rank,
+      w.skill))
+  end
+  return Hex(BAD, ("nobody has %s"):format(w.prof or "it")) .. Hex(DIM, ", needs " .. w.skill)
+end
+
+-- under the name: what to learn first, the chain in a few words, how it goes out, who when
+-- not you
+local function FlipSub(f)
+  local parts = {}
+  for i = 1, #f.steps - 1 do parts[#parts + 1] = StepName(f.steps[i]) end
+  parts[#parts + 1] = EXIT[f.exit.how]
+  local text = Hex(DIM, table.concat(parts, " > "))
+  local others = {}
+  for who in pairs(f.chars) do if who ~= Me() then others[#others + 1] = who end end
+  table.sort(others)
+  if #others > 0 then
+    text = text .. Hex(DIM, " · ") .. Hex(ACCENT, table.concat(others, ", "))
+  end
+  if not f.ready then
+    local learn = "learn " .. LearnCost(f)
+    -- the highest skill nobody has yet
+    local need
+    for _, w in ipairs(f.learns) do
+      if not w.who and (not need or w.skill > need.skill) then need = w end
+    end
+    learn = Hex(LEARN, learn)
+    if need then learn = learn .. Hex(BAD, (" %s %d"):format(need.prof or "?", need.skill)) end
+    text = learn .. Hex(DIM, " · ") .. text
+  end
+  return text
+end
+
+local function Secs(s)
+  if s < 60 then return ("%ds"):format(math.floor(s + 0.5)) end
+  return ("%dm %ds"):format(math.floor(s / 60), math.floor(s % 60 + 0.5))
+end
+
+local function FlipTip(f)
+  return function(tt)
+    local n = Batch(f)
+    tt:AddLine(ItemName(f.out) .. (f.made ~= 1 and Hex(DIM, " x" .. Qty(f.made)) or ""))
+    tt:AddLine(f.rec.name or "", 0.7, 0.7, 0.7)
+    tt:AddLine(" ")
+    tt:AddLine(n > 1 and ("For %d crafts"):format(n) or "For one craft", 1, 1, 1)
+    tt:AddLine("Buy", LABEL[1], LABEL[2], LABEL[3])
+    for _, b in ipairs(f.buys) do
+      local up = b.src == "ah" and M.Prices.SellRate(b.id)
+      local where = b.src == "vendor" and "vendor"
+        or ("AH" .. (up and up.listed and (", " .. up.listed .. " up") or ""))
+      tt:AddDoubleLine(("  %s %s"):format(Qty(b.n * n), ItemName(b.id)),
+        Money(b.each * b.n * n) .. Hex(DIM, " " .. where), 1, 1, 1, 1, 1, 1)
+    end
+    tt:AddLine("Craft", LABEL[1], LABEL[2], LABEL[3])
+    for _, s in ipairs(f.steps) do
+      local who = s.who or (s.rec.convert and "anyone") or (s.learn and "to learn") or "?"
+      local hex = s.learn and LEARN or who == Me() and DIM or ACCENT
+      tt:AddDoubleLine(("  %s x %s"):format(Qty(s.n * n), s.rec.name or "?"), Hex(hex, who),
+        1, 1, 1, 1, 1, 1)
+    end
+    tt:AddLine("Then", LABEL[1], LABEL[2], LABEL[3])
+    tt:AddDoubleLine(("  %s %s"):format(EXIT_VERB[f.exit.how], Qty(f.made * n)),
+      Money(f.value * n) .. (f.exit.who and Hex(DIM, " " .. f.exit.who) or ""), 1, 1, 1, 1, 1, 1)
+    for _, o in ipairs(f.exits) do
+      if o ~= f.exit then
+        tt:AddDoubleLine(Hex(DIM, "  or " .. EXIT[o.how]),
+          Hex(DIM, M.Money(o.value * f.made * n)))
+      end
+    end
+    tt:AddLine(" ")
+    Pair(tt, "Materials", Money(f.cost * n))
+    Pair(tt, "Profit", Profit(f.each * n))
+    if f.uplift and f.uplift >= 1 then
+      Pair(tt, "Buying every material instead", Profit(f.naive and f.naive * n))
+    elseif not f.naive then
+      tt:AddLine(Hex(DIM, "Only by crafting: the AH has no price for a material"))
+    end
+    Pair(tt, "Time a craft", Secs(f.secs))
+    Pair(tt, "Per hour, nonstop", Profit(f.perHour))
+    Pair(tt, ("Per day: %s crafts"):format(Qty(f.crafts)), Profit(f.perDay))
+    tt:AddLine(Hex(DIM, "  limited by " .. LIMIT[f.limit]))
+    if f.exit.how == "ah" and f.exit.perDay then
+      tt:AddLine(Hex(DIM, ("  %s sell here a day"):format(Qty(f.exit.perDay))))
+    elseif f.exit.how == "de" and f.exit.perDay then
+      tt:AddLine(Hex(DIM, ("  its materials sell as fast as %s disenchants a day")
+        :format(Qty(f.exit.perDay))))
+    end
+    if f.cooldown and f.limit ~= "cooldown" then
+      tt:AddLine(Hex(DIM, ("  cooldowns allow %s a day"):format(Qty(f.cooldown))))
+    end
+    if not f.ready then
+      tt:AddLine(" ")
+      tt:AddLine("Learn first", LABEL[1], LABEL[2], LABEL[3])
+      for _, w in ipairs(f.learns) do
+        local cost = w.cost and ((w.est and "~" or "") .. Money(w.cost)) or Hex(DIM, "?")
+        tt:AddDoubleLine(("  %s"):format(w.rec.name or "?"),
+          cost .. Hex(DIM, " " .. (w.from or "")), 1, 1, 1, 1, 1, 1)
+        tt:AddLine("    " .. LearnWho(w))
+      end
+      if f.pay > 0 then
+        tt:AddLine(Hex(DIM, ("  pays back after %s"):format(Plural(f.pay, "craft"))))
+      end
+    end
+    tt:AddLine(" ")
+    if f.rec.convert then
+      tt:AddLine(Hex(DIM, "Right-click the essence in your bags"))
+    elseif not f.ready then
+      tt:AddLine(Hex(LEARN, "Learn the recipes above first"))
+    elseif f.who == Me() then
+      tt:AddLine(Hex(DIM, "Click: queue 1 · Shift: 10 · intermediates come with it"))
+    else
+      tt:AddLine(Hex(ACCENT, ("%s crafts this: queue it there"):format(f.who or "?")))
+    end
+  end
+end
+
+local function FlipClick(f)
+  if not f.rec.convert and f.ready and f.who == Me() then return QueueClick(f.rec) end
+  return function()
+    local why = f.rec.convert and "Right-click the essence in your bags"
+      or not f.ready and ("Learn first: " .. f.learns[1].rec.name
+        .. (#f.learns > 1 and (" and %d more"):format(#f.learns - 1) or ""))
+      or ("%s crafts this: queue it there"):format(f.who or "?")
+    UI.Say(Hex(DIM, why))
+  end
+end
+
+local function Matches(f, q)
+  if q == "" then return true end
+  local text = ((f.rec.name or "") .. " " .. ItemName(f.out)):lower()
+  for _, s in ipairs(f.steps) do text = text .. " " .. (s.rec.name or ""):lower() end
+  for word in q:gmatch("%S+") do
+    if not text:find(word, 1, true) then return false end
+  end
+  return true
+end
+
+local function FlipRow(f)
+  local steps = #f.steps + (f.exit.how == "de" and 1 or 0)
+  return { icon = f.rec.icon or C_Item.GetItemIconByID(f.out),
+    name = Hex(f.ready and "ffffff" or LEARN, ItemName(f.out)), sub = FlipSub(f),
+    recID = not f.rec.convert and f.rec.id or nil, f = f,
+    sort = { name = ItemName(f.out), each = f.each, saves = f.uplift or f.each,
+      margin = f.margin, hour = f.perHour, day = f.perDay, steps = steps },
+    cells = { Profit(f.each),
+      not f.uplift and Hex(ACCENT, "only") or f.uplift >= 1 and Profit(f.uplift)
+        or Hex(DIM, "-"),
+      f.margin and ("%d%%"):format(math.floor(f.margin * 100 + 0.5)) or Hex(DIM, "-"),
+      Profit(f.perHour), Profit(f.perDay), Hex(steps > 1 and ACCENT or DIM, steps) },
+    tip = FlipTip(f), click = FlipClick(f) }
+end
+
+-- who has a profession, or who could take it up
+local function HasIt(p)
+  if p.best then return Hex(ACCENT, p.best.name) .. Hex(DIM, " " .. p.best.rank) end
+  if p.free == true then return Hex(DIM, "nobody yet · any character can learn it") end
+  if #p.free == 0 then return Hex(BAD, "nobody · no free profession slot") end
+  return Hex(DIM, "nobody · free slot: ") .. Hex(ACCENT, table.concat(p.free, ", "))
+end
+
+local function ProfTip(p, now)
+  return function(tt)
+    tt:AddLine(p.prof or "?")
+    tt:AddLine(HasIt(p))
+    tt:AddLine(" ")
+    Pair(tt, "A day now, your best 5 flips", Profit(now))
+    Pair(tt, "With its recipes", Profit(p.with))
+    Pair(tt, "Gain", Profit(p.gain))
+    if p.skill then
+      Pair(tt, "Skill needed", (p.best and p.best.rank >= p.skill) and tostring(p.skill)
+        or Hex(BAD, p.skill))
+    end
+    if p.cost then Pair(tt, "Learning", Money(p.cost)) end
+    if #p.new > #p.cheaper then
+      tt:AddLine(" ")
+      tt:AddLine(("Best new flips (%d)"):format(#p.new - #p.cheaper), LABEL[1], LABEL[2],
+        LABEL[3])
+    end
+    local shown = 0
+    for _, f in ipairs(p.new) do
+      if shown >= PROF_TIP_MAX then break end
+      if not f.cheaper then
+        shown = shown + 1
+        local skill = 0
+        for _, w in ipairs(f.learns) do skill = math.max(skill, w.skill) end
+        tt:AddDoubleLine(("  %s"):format(ItemName(f.out)) .. Hex(DIM, (" %d, learn %s")
+          :format(skill, LearnCost(f))), Profit(f.perDay) .. Hex(DIM, " a day"), 1, 1, 1, 1, 1,
+          1)
+      end
+    end
+    if #p.cheaper > 0 then
+      tt:AddLine(" ")
+      tt:AddLine(("Your flips it makes cheaper (%d)"):format(#p.cheaper), LABEL[1], LABEL[2],
+        LABEL[3])
+      for i = 1, math.min(PROF_TIP_MAX, #p.cheaper) do
+        local f = p.cheaper[i]
+        local was = f.was and ("was " .. M.Money(f.was.each)) or "lost money before"
+        tt:AddDoubleLine(("  %s"):format(ItemName(f.out))
+          .. Hex(DIM, (" %s a craft, %s"):format(M.Money(f.each), was)),
+          Profit(f.perDay - (f.was and f.was.perDay or 0)) .. Hex(DIM, " a day more"), 1, 1, 1,
+          1, 1, 1)
+      end
+    end
+    tt:AddLine(" ")
+    tt:AddLine(Hex(DIM, "Click: list these flips"))
+  end
+end
+
+local function ProfRow(p, now)
+  local f = p.new[1]
+  local short = p.skill and not (p.best and p.best.rank >= p.skill)
+  return { icon = f and (f.rec.icon or C_Item.GetItemIconByID(f.out)), name = p.prof or "?",
+    sub = HasIt(p), p = p,
+    sort = { name = p.prof or "", gain = p.gain, best = f and f.perDay or 0, new = #p.new,
+      skill = p.skill or 0, learn = p.cost or 0 },
+    cells = { Profit(p.gain), f and Profit(f.perDay) or Hex(DIM, "-"),
+      Hex(#p.new > 0 and "ffffff" or DIM, #p.new),
+      p.skill and Hex(short and BAD or "ffffff", p.skill) or Hex(DIM, "-"), Money(p.cost) },
+    tip = ProfTip(p, now),
+    click = function()
+      local s = state.flips
+      s.view, s.prof, s.scope = "flips", p.line, "all"
+      state.sort.flips = nil
+      offset = 0
+      UI.Refresh()
+    end }
+end
+
+VIEWS.flips = {
+  title = "Flips",
+  rowH = 32,
+  anyProf = true,
+  columns = FLIP_COLUMNS,
+  defaultSort = "day",
+  Build = function()
+    local s = state.flips
+    local profs = s.view == "profs"
+    VIEWS.flips.columns = profs and PROF_COLUMNS or FLIP_COLUMNS
+    VIEWS.flips.defaultSort = profs and "gain" or "day"
+    VIEWS.flips.ascending = profs and { name = true, skill = true, learn = true } or nil
+    local data = FlipsData()
+    local out = {}
+    if not (data and data.key == Key()) then return out end
+    if profs then
+      for _, p in ipairs(data.list) do out[#out + 1] = ProfRow(p, data.now or 0) end
+      out.now = data.now
+      return out
+    end
+    local q = (s.text or ""):lower()
+    for _, f in ipairs(data.list) do
+      if (f.multi or not s.multi) and s.exits[f.exit.how] and (not s.prof or f.lines[s.prof])
+        and (not s.char or f.chars[s.char]) and Matches(f, q) then
+        out[#out + 1] = FlipRow(f)
+      end
+    end
+    return out
+  end,
+  defaults = DEFAULT,
+  Status = FlipsStatus,
+  LineNames = LineNames,
+  SCOPES = SCOPES,
+}
+end
+
+local VIEW_ORDER = { "profit", "skill", "queue", "find", "flips" }
 -- the view drawn: Skill-up shows its Route mode in its own columns
 local function ViewKey()
   if state.view == "skill" and state.route.on then return "route" end
@@ -2248,6 +2641,15 @@ local function Status(list)
   if state.view == "find" then
     return FindStatus() or (Hex("ffffff", #list) .. Hex(DIM, " recipes   ") .. FIND_HINTS)
   end
+  if state.view == "flips" then
+    if VIEWS.flips.Status() then return VIEWS.flips.Status() end
+    if list.now then
+      return Hex(DIM, "Now ") .. Profit(list.now) .. Hex(DIM, " a day from your best 5 flips   ")
+        .. Hints({ "Click", "its flips" })
+    end
+    return Hex("ffffff", #list) .. Hex(DIM, " flips   ")
+      .. Hints({ "Click", "queue", "Shift", "10" })
+  end
   -- each price is the newer of our own AH sighting and TSM's data (Prices.lua Newest): the
   -- footer says which our last full scan is
   local src = M.Prices.Source()
@@ -2278,14 +2680,15 @@ function UI.Refresh()
   local rank, max = RankOf(prof or "")
   local what = prof and (prof .. (rank and (" %d/%d"):format(rank, max or 0) or ""))
   if whatIf then what = ("%s at %d %s"):format(prof, rank, Hex(ACCENT, "(what if)")) end
-  local find = state.view == "find"
+  local find, flips = state.view == "find", state.view == "flips"
   if find then what = "find recipes" end
+  if flips then what = "craft flips" end
   if R.Viewer() and what then what = ("%s's %s"):format(CharName(R.Viewer()), what) end
   frame:SetTitle(("Meionomics: %s"):format(what or "no recipes recorded"))
   SetTabs()
   local queue = state.view == "queue"
   local skill, route = state.view == "skill", ViewKey() == "route"
-  frame.showMenu:SetShown(not (queue or find or route))
+  frame.showMenu:SetShown(not (queue or find or route or flips))
   frame.showMenu:GenerateMenu()
   frame.modeMenu:SetShown(skill)
   frame.modeMenu:GenerateMenu()
@@ -2295,12 +2698,12 @@ function UI.Refresh()
   for _, w in ipairs(frame.routeBar) do w:SetShown(route) end
   frame.routeOpts:GenerateMenu()
   frame.routeQueue:SetEnabled(not (whatIf or R.Viewer()))
-  frame.profMenu:SetShown(not (queue or find))
+  frame.profMenu:SetShown(not (queue or find or flips))
   frame.profMenu:SetWidth(route and 110 or skill and 100 or 130)
   frame.profMenu:ClearAllPoints()
   frame.profMenu:SetPoint("RIGHT", skill and frame.modeMenu or frame.showMenu, "LEFT", -6, 0)
   frame.profMenu:GenerateMenu()
-  local searching = not (queue or find or route)
+  local searching = not (queue or find or route or flips)
   frame.search:SetShown(searching)
   if searching then
     local leftmost = frame.profMenu:IsShown() and frame.profMenu
@@ -2310,6 +2713,13 @@ function UI.Refresh()
   frame.findBar:SetShown(find)
   if find then
     for _, d in ipairs(frame.findBar.menus) do d:GenerateMenu() end
+  end
+  frame.flipsBar:SetShown(flips)
+  if flips then
+    for _, d in ipairs(frame.flipsBar.menus) do d:GenerateMenu() end
+    local list = state.flips.view ~= "profs"
+    frame.flipsBar.prof:SetShown(list)
+    frame.flipsBar.search:SetShown(list)
   end
   local view = VIEWS[ViewKey()]
   local list = (prof or view.anyProf) and view.Build(prof, rank) or {}
@@ -2571,6 +2981,9 @@ local TAB_HELP = {
   end,
   find = { "Find", "Every recipe of your professions, learnt or not",
     "Also above your skill: where to learn it and whether it pays. /meio find <name>" },
+  flips = { "Flips", "Crafting chains that make money, across all your characters",
+    "Materials bought or crafted the cheapest way (bolts, bars, essences combined or split), "
+    .. "the result sold, vendored or disenchanted. Ranked by profit a day. /meio flips" },
 }
 
 local function Tab(key, i)
@@ -2796,6 +3209,148 @@ local function CreateFindBar()
   Help(search, { "Search", "Recipes whose name has every word you type" })
   bar.search = search
   bar.menus = { filter, mode, prof }
+  bar:Hide()
+end
+
+-- Flips' controls: search; which recipes, chains only, ways out; Flips or By profession; the
+-- profession and character the list is limited to
+local FLIP_EXITS = { { "ah", "Sold on the AH" }, { "vendor", "Sold to a vendor" },
+  { "de", "Disenchanted" } }
+local FLIP_VIEWS = { { "flips", "Flips" }, { "profs", "By profession" } }
+
+-- every character's name once: old records of a renamed or recreated one share it
+local function CharNames()
+  local seen, out = {}, {}
+  for _, c in pairs(R.Chars()) do
+    if c.name and not seen[c.name] then
+      seen[c.name] = true
+      out[#out + 1] = c.name
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+function VIEWS.flips.CreateBar()
+  local bar = CreateFrame("Frame", nil, frame)
+  bar:SetPoint("TOPLEFT", 12, -28)
+  bar:SetPoint("TOPRIGHT", -12, -28)
+  bar:SetHeight(26)
+  frame.flipsBar = bar
+  local function Changed()
+    offset = 0
+    UI.Refresh()
+  end
+  local menu = Dropdown(120, function(_, root)
+    local f = state.flips
+    root:CreateTitle("Recipes")
+    for _, sc in ipairs(VIEWS.flips.SCOPES) do
+      root:CreateRadio(sc[2], function() return f.scope == sc[1] end, function()
+        f.scope = sc[1]
+        Changed()
+      end)
+    end
+    root:CreateDivider()
+    root:CreateCheckbox("Chains only", function() return f.multi end, function()
+      f.multi = not f.multi
+      Changed()
+    end)
+    root:CreateDivider()
+    root:CreateTitle("Ways out")
+    for _, e in ipairs(FLIP_EXITS) do
+      root:CreateCheckbox(e[2], function() return f.exits[e[1]] end, function()
+        f.exits[e[1]] = not f.exits[e[1]]
+        Changed()
+      end)
+    end
+  end)
+  menu:SetParent(bar)
+  menu:SetPoint("TOPRIGHT", 0, -2)
+  menu:SetSelectionText(function()
+    local f = state.flips
+    local text = "Known"
+    for _, sc in ipairs(VIEWS.flips.SCOPES) do if sc[1] == f.scope then text = sc[2] end end
+    return f.multi and (text .. ", chains") or text
+  end)
+  Help(menu, { "Which flips", "Recipes: known by one of your characters, also those one could "
+    .. "learn now, or every recipe there's a way to learn", "Chains only: more than one craft, "
+    .. "a vendor or disenchant at the end, or two of your characters" })
+  local view = Dropdown(118, function(_, root)
+    for _, v in ipairs(FLIP_VIEWS) do
+      root:CreateRadio(v[2], function() return state.flips.view == v[1] end, function()
+        if state.flips.view ~= v[1] then
+          state.flip = state.flip or {}
+          state.sort.flips, state.flip.flips = nil, false
+        end
+        state.flips.view = v[1]
+        Changed()
+      end)
+    end
+  end)
+  view:SetParent(bar)
+  view:SetPoint("RIGHT", menu, "LEFT", -4, 0)
+  view:SetSelectionText(function()
+    return state.flips.view == "profs" and "By profession" or "Flips"
+  end)
+  Help(view, { "View", "Flips: every money-making chain", "By profession: what each "
+    .. "profession's recipes would add to your best 5 flips a day, so you can see what to "
+    .. "learn next. Click one to list its flips" })
+  local prof = Dropdown(104, function(_, root)
+    local names = VIEWS.flips.LineNames()
+    local lines = {}
+    for line in pairs(names) do lines[#lines + 1] = line end
+    table.sort(lines, function(a, b) return names[a] < names[b] end)
+    local f = state.flips
+    root:CreateTitle("Profession")
+    root:CreateRadio("All professions", function() return not f.prof end, function()
+      f.prof = nil
+      Changed()
+    end)
+    for _, line in ipairs(lines) do
+      root:CreateRadio(names[line], function() return f.prof == line end, function()
+        f.prof = line
+        Changed()
+      end)
+    end
+    root:CreateDivider()
+    root:CreateTitle("Character")
+    root:CreateRadio("All characters", function() return not f.char end, function()
+      f.char = nil
+      Changed()
+    end)
+    for _, name in ipairs(CharNames()) do
+      root:CreateRadio(name, function() return f.char == name end, function()
+        f.char = name
+        Changed()
+      end)
+    end
+  end)
+  prof:SetParent(bar)
+  prof:SetPoint("RIGHT", view, "LEFT", -4, 0)
+  prof:SetSelectionText(function()
+    local f = state.flips
+    local name = f.prof and VIEWS.flips.LineNames()[f.prof]
+    if f.char then return name and (f.char .. ", " .. name) or f.char end
+    return name or "All professions"
+  end)
+  Help(prof, { "Profession and character", "Profession: flips with a step in it "
+    .. "(Enchanting: disenchanted too)", "Character: flips where they craft a step or "
+    .. "disenchant the result" })
+  local search = CreateFrame("EditBox", nil, bar, "SearchBoxTemplate")
+  search:SetHeight(20)
+  search:SetPoint("LEFT", 6, -1)
+  search:SetPoint("RIGHT", prof, "LEFT", -8, 0)
+  search:SetAutoFocus(false)
+  search:HookScript("OnTextChanged", function(self)
+    local text = self:GetText() or ""
+    if text == (state.flips.text or "") then return end
+    state.flips.text = text ~= "" and text or nil
+    Changed()
+  end)
+  search:SetText(state.flips.text or "")
+  Help(search, { "Search", "Flips whose result, recipe or any step has every word you type" })
+  bar.search, bar.menu, bar.view, bar.prof = search, menu, view, prof
+  bar.menus = { menu, view, prof }
   bar:Hide()
 end
 
@@ -3106,6 +3661,7 @@ local function Create()
     "Route: the cheapest run of crafts from your skill to the target, ready to queue" })
   CreateRouteBar()
   CreateFindBar()
+  VIEWS.flips.CreateBar()
   CreateSearch()
 
   frame.heads = {}
@@ -3266,6 +3822,11 @@ function M.OnLoad()
   for k, v in pairs(FIND_DEFAULT) do
     if state.find[k] == nil then state.find[k] = type(v) == "table" and CopyTable(v) or v end
   end
+  state.flips = type(state.flips) == "table" and state.flips or {}
+  for k, v in pairs(VIEWS.flips.defaults) do
+    if state.flips[k] == nil then state.flips[k] = type(v) == "table" and CopyTable(v) or v end
+  end
+  if state.flips.learnable then state.flips.scope, state.flips.learnable = "learnable", nil end
 end
 
 M.On("ADDON_LOADED", function(_, name)
@@ -3347,7 +3908,9 @@ M.commands.whatif = function(rest)
     end
     if not prof then return M.Print("what if: no profession called " .. name) end
   end
-  if state.view == "queue" or state.view == "find" then state.view = "profit" end
+  if state.view == "queue" or state.view == "find" or state.view == "flips" then
+    state.view = "profit"
+  end
   UI.WhatIf(prof or CurrentProfession(), rank)
   UI.Show()
 end
@@ -3358,4 +3921,12 @@ M.commands.find = function(rest)
   if rest and rest ~= "" then state.find.text = rest end
   UI.Show()
   frame.findBar.search:SetText(state.find.text or "")
+end
+
+-- /meio flips [name]: the Flips view, with or without the profession window
+M.commands.flips = function(rest)
+  state.view, offset = "flips", 0
+  if rest and rest ~= "" then state.flips.text = rest end
+  UI.Show()
+  frame.flipsBar.search:SetText(state.flips.text or "")
 end

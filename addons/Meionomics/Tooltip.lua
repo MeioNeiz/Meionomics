@@ -185,10 +185,11 @@ local function Gather(key, bound, link)
   -- IsBound is true for quest items too: their own reason says more
   if ok and bound then ok, why = false, "soulbound" end
   if not ok then d.hasAH, d.noAH = nil, why end
+  -- before BestAction: its AH price and the craft lines' share R.AHNet's cache
+  R.ResetCache()
   d.act = P.BestAction(key, bound, link)
   d.ev = d.hasAH and (d.act and d.act.ev or P.Evidence(key)) or nil
   d.sd = d.hasAH and M.SellDay.Quote(key) or nil
-  R.ResetCache()
   local recs = R.Making(itemID)
   if recs then
     d.craft, d.e = R.Best(recs)
@@ -812,7 +813,7 @@ local function OnItem(tt, data)
   T.Draw(tt, data.id)
 end
 
--- TooltipFold adds Leveling BiS's verdict to item tooltips (it sets blockOff): on a trainer
+-- MeioTooltipFold adds Leveling BiS's verdict to item tooltips (it sets blockOff): on a trainer
 -- line showing the item made, a second BiS row would only contradict it
 local function FoldsBis(tt)
   local api = ForeverLevelingBiS_API

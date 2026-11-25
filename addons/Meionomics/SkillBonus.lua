@@ -35,6 +35,7 @@ B.MODELS = {
 
 ------------------------------------------------------------------------------ Perk
 local perk   -- { rank, max, bonus } of this character, read lazily
+local perkTried
 
 local NONE = { rank = 0, max = 0, bonus = 0 }
 
@@ -45,7 +46,8 @@ local function ReadPerk()
   local config = T.GetConfigIDByTreeID(TREE)
   if not config then return nil end
   local nodes = T.GetTreeNodes(TREE)
-  for _, nodeID in ipairs(nodes or {}) do
+  if type(nodes) ~= "table" or #nodes == 0 then return nil end
+  for _, nodeID in ipairs(nodes) do
     local node = T.GetNodeInfo(config, nodeID)
     local entryID = node and (node.activeEntry and node.activeEntry.entryID
       or node.entryIDs and node.entryIDs[1])
@@ -67,13 +69,26 @@ end
 
 function B.Perk()
   if perk then return perk end
+  -- a tree not loaded yet isn't cached: B.Bonus runs on every solve of a route plan
+  local now = GetTime()
+  if perkTried and now - perkTried < 1 then return NONE end
+  perkTried = now
   local ok, p = pcall(ReadPerk)
   if not ok then p = NONE end
   perk = p
+  local me = p and M.Recipes.Chars()[M.Recipes.Me() or ""]
+  if me then me.overtime = p.bonus end
   return p or NONE
 end
 
-function B.Bonus() return B.Perk().bonus end
+-- Legacy points are per character: an alt shown in the crafting panel (R.SetViewer) gets
+-- its own bonus as its last login saw it, none if never seen
+function B.Bonus()
+  local who = M.Recipes.Viewer()
+  if not who then return B.Perk().bonus end
+  local c = M.Recipes.Chars()[who]
+  return c and c.overtime or 0
+end
 
 ------------------------------------------------------------------------------ Models
 local function Store()
@@ -280,6 +295,8 @@ local function Crafted(id)
 end
 
 M.On("PLAYER_LOGIN", function()
+  -- a read before Recipes knew who this is wasn't recorded for the alt view
+  perk, perkTried = nil, nil
   ranks = ReadRanks()
   for _, e in ipairs({ "SKILL_LINES_CHANGED", "CHAT_MSG_SKILL" }) do
     pcall(M.On, e, SkillChanged)
@@ -289,7 +306,7 @@ M.On("PLAYER_LOGIN", function()
   for _, e in ipairs(traitEvents) do
     pcall(M.On, e, function()
       local was = B.Bonus()
-      perk = nil
+      perk, perkTried = nil, nil
       if B.Bonus() ~= was then M.Recipes.Changed() end
     end)
   end
@@ -302,6 +319,7 @@ end)
 local function Pct(x) return ("%d%%"):format(x * 100 + 0.5) end
 
 function B.Report()
+  perk, perkTried = nil, nil
   local p = B.Perk()
   if p.rank == 0 then
     M.Print(("Working Overtime not taken (0/%d): skill-up chances are the base ones.")
@@ -341,7 +359,8 @@ function B.ReportSaving(rest)
   for w in rest:gmatch("%S+") do
     if tonumber(w) then nums[#nums + 1] = tonumber(w) else words[#words + 1] = w:lower() end
   end
-  local want, prof = table.concat(words, " ")
+  local want = table.concat(words, " ")
+  local prof
   for name in pairs(C.Lines()) do
     if name:lower():sub(1, #want) == want and (not prof or name:lower() == want) then
       prof = name

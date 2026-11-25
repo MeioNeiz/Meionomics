@@ -8,7 +8,7 @@
 --                 what its columns show and the detail wait for Shift (opts.full)
 --   opts.mats     list the materials without opts.full (the recipe item's Shift ledger)
 --   opts.noHead   leave out the "Recipe" heading (the caller has its own)
---   opts.noBis    leave out the Leveling BiS rows (TooltipFold already shows its verdict)
+--   opts.noBis    leave out the Leveling BiS rows (MeioTooltipFold already shows its verdict)
 --   opts.atTrainer  a trainer's own tooltip: no rows on where to learn it
 --   opts.x        the panel's judged C.Info (adds the verdict last)
 --   opts.queued   n queued: a line when above 0

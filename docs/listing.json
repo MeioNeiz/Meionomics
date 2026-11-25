@@ -1,0 +1,17 @@
+{
+  "title": "Meionomics",
+  "summary": "What to craft for profit or skill-ups, what to sell and what to buy, for WoW Forever.",
+  "cfCategory": "Professions",
+  "cfExtra": ["Auction & Economy"],
+  "wagoCategories": ["Professions", "Auction & Economy"],
+  "gallery": [
+    {"file": "skillup.png", "title": "Skill-up",
+     "description": "Tailoring recipes that give skill points, cheapest per point first, each with a verdict"},
+    {"file": "route.png", "title": "Route to a target",
+     "description": "The cheapest sequence of crafts up to the skill you type in"},
+    {"file": "queue.png", "title": "Queue and shopping list",
+     "description": "Queued crafts with what to take from bags, bank and alts, and what to buy"},
+    {"file": "find.png", "title": "Find any recipe",
+     "description": "Every recipe of your professions with its profit, sales a day and where to learn it"}
+  ]
+}

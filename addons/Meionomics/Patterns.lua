@@ -4,8 +4,8 @@
 -- Fed by GetAll scans (A.Record), the Patterns view's browse (all pages; empty text covers the
 -- class) and the Sell tab's live search.
 -- Watch list: patterns of his professions he doesn't know, worth learning at their last-seen
--- (else market) price: verdict "do" or "level" and C.Value.PerDay >= WATCH_MIN. One chat line
--- each time one comes up (once per spell of being listed).
+-- (else market) price: verdict "do" or "level" and C.Value.PerDay >= WATCH_MIN. Alerted once
+-- per spell of being listed, all of a scan in one digest, best first.
 local _, M = ...
 local A = M.Auction
 local Pt = {}
@@ -128,19 +128,74 @@ function Pt.Worth(x, v)
   return day and day >= Pt.WATCH_MIN and day or nil
 end
 
--- "Pattern: X is up for 4g (worth ~2g/day)", once per spell of being listed
+-- chat frame for digests: a tab named "Meionomics" if he made one, else the main one
+function Pt.ChatFrame()
+  for i = 1, NUM_CHAT_WINDOWS or 10 do
+    local name, _, _, _, _, _, shown, _, docked = GetChatWindowInfo(i)
+    local f = _G["ChatFrame" .. i]
+    if f and name == "Meionomics" and (shown or docked) then return f end
+  end
+  return DEFAULT_CHAT_FRAME
+end
+
+Pt.DIGEST_MAX = 8
+local queued, flushing = {}, false
+
+-- "[Recipe: Transmute Arcanite]" -> "[Transmute Arcanite]": the type is in the header
+local function Short(link) return (link:gsub("|h%[[^%]:]+: ", "|h[")) end
+
+local function Payback(price, perDay)
+  local days = math.ceil(price / perDay)
+  if days < 2 then return "" end
+  return (" |cff9d9d9d(pays back in %d days)|r"):format(days)
+end
+
+local function Line(e)
+  return ("|cff80ff80+|r%s|cff80ff80/day|r  %s for %s%s"):format(M.Money(e.day, "80ff80"),
+    Short(e.link), M.Money(e.price), Payback(e.price, e.day))
+end
+
+local function Flush(tries)
+  local missing
+  for _, e in ipairs(queued) do
+    e.link = e.link or select(2, C_Item.GetItemInfo(e.item))
+    if not e.link then
+      missing = true
+      C_Item.RequestLoadItemDataByID(e.item)
+    end
+  end
+  -- uncached items have no link yet; wait a little rather than print bare IDs
+  if missing and tries < 6 then return C_Timer.After(0.5, function() Flush(tries + 1) end) end
+  local list = queued
+  queued, flushing = {}, false
+  for _, e in ipairs(list) do
+    e.link = e.link or ("[" .. (C_Item.GetItemNameByID(e.item) or ("item " .. e.item)) .. "]")
+  end
+  table.sort(list, function(a, b) return a.day > b.day end)
+  local out = Pt.ChatFrame()
+  if #list == 1 then
+    return out:AddMessage(M.ACCENT .. "Meionomics:|r " .. Pt.STAR .. " pattern worth learning "
+      .. "is up: " .. Line(list[1]))
+  end
+  out:AddMessage(("%sMeionomics:|r %s %d patterns worth learning are up, best first:"):format(
+    M.ACCENT, Pt.STAR, #list))
+  for k = 1, math.min(#list, Pt.DIGEST_MAX) do out:AddMessage("   " .. Line(list[k])) end
+  if #list > Pt.DIGEST_MAX then
+    out:AddMessage(("   |cff9d9d9d+%d more at %s/day or less: AH > Meionomics > Patterns|r")
+      :format(#list - Pt.DIGEST_MAX, M.Money(list[Pt.DIGEST_MAX + 1].day)))
+  end
+end
+
+-- once per spell of being listed; everything alerted in one scan comes as one digest
 function Pt.Alert(item, perDay)
   local rec = db and db.items[item]
   if not (rec and rec.up) or rec.told then return end
   rec.told = M.Now()
-  local price = rec.p
-  -- uncached items have no link yet; wait for it rather than print a bare ID
-  Item:CreateFromItemID(item):ContinueOnItemLoad(function()
-    local link = select(2, C_Item.GetItemInfo(item)) or C_Item.GetItemNameByID(item)
-    if not link then return end
-    M.Print(("%s %s is up for %s (worth ~%s/day)"):format(Pt.STAR, link, M.Money(price),
-      M.Money(perDay)))
-  end)
+  queued[#queued + 1] = { item = item, day = perDay, price = rec.p }
+  if not flushing then
+    flushing = true
+    C_Timer.After(0, function() Flush(0) end)
+  end
 end
 
 -- after a scan: alert the watched ones in seen. C.Value.ForProf builds every recipe of a

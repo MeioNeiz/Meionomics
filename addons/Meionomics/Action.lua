@@ -7,11 +7,11 @@
 --     act.reason  short why, or nil
 --     act.runner  { verb, value }: the next best way to sell it
 --     act.rec     craft: the recipe; act.flip { each, qty }: AH listings under vendor price
---     act.sale    P.SaleOptions + safe AH + craft, for the Shift comparison; act.ev P.Evidence
+--     act.sale    P.SaleOptions + R.AHNet + craft, for the Shift comparison; act.ev P.Evidence
 --   A.Line(act[, opts]) -> left, right: "Best: <icon> Vendor"   1s (opts.reason: the why too)
 --   A.Rows(rows, act) appends the Shift comparison in T.Render's row shape
 --   A.FlipLine(act) -> "Buy on AH, vendor: +4c each (12 up)" or nil
---   A.PriceLine(act[, opts]) -> "[bag] 16c   [coins] 21c" (safe AH price only) or "Can't sell"
+--   A.PriceLine(act[, opts]) -> "[bag] 16c   [coins] 21c" (R.AHNet price) or "Can't sell"
 --   A.Compact(act[, opts]) -> the compact tooltip's rows, icons over words
 local _, M = ...
 local P, R = M.Prices, M.Recipes
@@ -80,15 +80,21 @@ local function CraftUse(itemID)
   end
 end
 
--- P.SaleOptions plus: the AH only ever at the safe price (and not counted when confidence is
--- low: no guesses, unless only the prices disagree, which the safe price allows for),
--- crafting it
+-- P.SaleOptions plus: the AH at R.AHNet's price (sells in a day, else the safe price; not
+-- counted when confidence is low: no guesses, unless only the prices disagree, which the safe
+-- price allows for), crafting it
 function A.Sale(itemID, bound)
   local s = P.SaleOptions(itemID, bound)
   local ok = P.Auctionable(itemID)
   s.ev = ok and not bound and P.Evidence(itemID) or nil
   local ev = s.ev
-  if s.ah and ev and ev.price then
+  -- the craft lines' value (R.AHNet), so the price line and "sells" never disagree
+  local net, _, day
+  if ok and not bound then net, _, day = R.AHNet(itemID) end
+  if net then
+    s.ah = math.floor(net + 0.5)
+    s.safe = ev and ev.level ~= "high" and not day or nil
+  elseif s.ah and ev and ev.price then
     s.ah = math.min(s.ah, math.floor(ev.price * (1 - P.AH_CUT) + 0.5))
     s.safe = ev.level ~= "high"
   end
@@ -319,7 +325,7 @@ end
 
 -- "[bag] 16c   [coins] 21c", this order: icons, no words ("if we have icons do we need
 -- text"). The winner green behind a gold arrow, the other faded; opts.faded: both faded, no
--- arrow (Best is something else). AH is only ever the safe price after the cut (A.Sale): faded
+-- arrow (Best is something else). AH is only ever R.AHNet's price (A.Sale): faded
 -- with a gold ? when confidence is low or it doesn't sell, a grey ? with no AH data, left
 -- out when it
 -- can't be auctioned. "Can't sell" when neither takes it. opts.count: for that many;

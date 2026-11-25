@@ -189,6 +189,28 @@ local function Label(r)
 end
 
 ------------------------------------------------------------------------------ Buying
+-- the server sold the cheapest units: off the rows in price order, the rest of a listing stays
+-- up for a later buy (more queued) without a new search
+local function TakeCommodity(itemID, qty)
+  local rows = B.state.rows
+  local listed = {}
+  for _, x in ipairs(rows) do
+    if x.itemID == itemID and not x.mine then listed[#listed + 1] = x end
+  end
+  table.sort(listed, function(a, b) return a.unit < b.unit end)
+  for _, x in ipairs(listed) do
+    if qty <= 0 then break end
+    local n = math.min(x.qty, qty)
+    x.qty, qty = x.qty - n, qty - n
+  end
+  for i = #rows, 1, -1 do
+    if rows[i].qty <= 0 then
+      if B.state.selected == rows[i] then B.state.selected = nil end
+      table.remove(rows, i)
+    end
+  end
+end
+
 function S.Buy(r)
   if buying or not (r and B.CanBuy(r)) then return end
   local qty, cost = Amount(r)
@@ -199,10 +221,7 @@ function S.Buy(r)
       buying = nil
       if not ok then return end
       C.AddBought(r.itemID, qty)
-      for i = #B.state.rows, 1, -1 do
-        local x = B.state.rows[i]
-        if x.itemID == r.itemID and x.pick then table.remove(B.state.rows, i) end
-      end
+      TakeCommodity(r.itemID, qty)
       if M.CraftUI then M.CraftUI.RefreshSoon() end
     end)
     return

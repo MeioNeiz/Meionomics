@@ -234,6 +234,11 @@ local HELP = {
     { "/meio find [name]", "every recipe of your professions, known or not, above your skill "
       .. "too; opens without the profession window" },
   } },
+  { "flips", "[name]", "crafting chains that make money, all characters", detail = {
+    { "/meio flips [name]", "materials bought or crafted the cheapest way by any of your "
+      .. "characters (bolts, bars, essences combined or split), the result sold, vendored or "
+      .. "disenchanted; ranked by profit a day" },
+  } },
   { "whatif", "[profession] [skill]", "crafting panel at another skill", detail = {
     { "/meio whatif [profession] [skill]", "profit and skill-up routes at any skill, learnt "
       .. "or not, e.g. /meio whatif tailoring 150" },
@@ -262,6 +267,16 @@ local HELP = {
     { "/meio sells <item link or ID>", "sold per day, sale rate, listings up, days to clear" },
   } },
   { "posts", "", "how your posts sold, by undercut" },
+  { "snipe", "[on||off||add||list...]", "deal alarms and the AH tab's Sniper", detail = {
+    { "/meio snipe", "settings and every subcommand" },
+    { "/meio snipe add <item> <max>", "alarm when it's up at or under max, e.g. 5g or 50s" },
+    { "/meio snipe remove <item>", "stop watching it; list: every watched item" },
+    { "/meio snipe pct <n>", "a deal is under n% of market (default 50)" },
+    { "/meio snipe profit <gold>", "and makes this much after the AH cut (default 1g)" },
+    { "/meio snipe big <gold>", "raid warning, and phone with phone on (default 10g)" },
+    { "/meio snipe phone on||off", "big deals as a screenshot the MeioSnipe companion sends" },
+    { "/meio snipe test", "a pretend big deal, to try the alarm and the phone" },
+  } },
   "Prices",
   { "source", "", "where prices come from" },
   { "sell", "[TSM price]", "TSM price string for item values", detail = {

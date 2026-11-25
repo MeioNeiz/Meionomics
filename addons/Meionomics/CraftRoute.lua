@@ -121,7 +121,7 @@ function Route.Start(prof, rank, to, opts)
     local ok, res = coroutine.resume(co)
     slice = nil
     if not ok then
-      job.err, job.done = debug.traceback(co, res), true
+      job.err, job.done = tostring(res) .. "\n" .. (debugstack(co) or ""), true
     elseif coroutine.status(co) == "dead" then
       job.plan, job.done = res, true
     end

@@ -135,17 +135,23 @@ local function MyMat(id)
   end
 end
 
--- why a bag item may go to the vendor -> reason, or nil when it stays. Grey items always go;
--- anything else only when P.BestAction says Vendor and the AH price says so too, never when it
--- is soulbound, a quest item, needed by the craft queue, a material of a known recipe, on
--- MeioQoL's restock list or an upgrade (BestAction: Equip).
+-- why a bag item may go to the vendor -> reason, or nil when it stays. Grey items and MeioBags'
+-- junk list always go, its keep list never; anything else only when P.BestAction says Vendor and
+-- the AH price says so too, never when it is gear, soulbound, a quest item, needed by the craft
+-- queue, a material of a known recipe or on MeioQoL's restock list.
+-- Gear never: Leveling BiS can't rate what you can't wear yet, so a green weapon for a few levels
+-- on looked like vendor trash and was sold.
 function Mc.Junk(c, queued)
   local id = c.itemID
   if not id or c.hasNoValue or c.isLocked then return nil end
-  local _, _, quality, _, _, _, _, _, _, _, vendor = C_Item.GetItemInfo(id)
+  local _, _, quality, _, _, _, _, _, _, _, vendor, classID = C_Item.GetItemInfo(id)
   if not (vendor and vendor > 0) then return nil end
   if c.quest or queued[id] then return nil end
+  local bags = _G.MeioBags
+  if bags and bags.IsKept and bags.IsKept(id) then return nil end
   if (quality or c.quality) == 0 then return "grey" end
+  if bags and bags.IsJunk and bags.IsJunk(id) then return "on your MeioBags junk list" end
+  if classID == 2 or classID == 4 then return nil end
   if c.isBound or MyMat(id) then return nil end
   local restock = MeioQoLCharDB and MeioQoLCharDB.restock
   if type(restock) == "table" and restock[id] then return nil end

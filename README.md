@@ -1,132 +1,64 @@
 # Meionomics
 
-A crafting and pricing addon for **WoW Forever**. It sits beside your profession window and
-tells you what to craft: what makes money, what levels you most cheaply, and the cheapest
-route to a target skill. It also builds a shopping list and crafts intermediates such as
-bolts for you. Works for every crafting profession: Alchemy, Blacksmithing, Cooking,
-Enchanting, Engineering, First Aid, Leatherworking, Mining (smelting) and Tailoring.
-
-It uses TradeSkillMaster's prices when TSM is installed, and scans the Auction House itself
-when it isn't.
+What to craft for profit or skill-ups, what to sell and what to buy, for WoW Forever.
 
 | Skill-up | Route to a target |
 |---|---|
-| ![Skill-up view](docs/skillup.png) | ![Route view](docs/route.png) |
+| ![Tailoring skill-ups, cheapest per point first, with a verdict per recipe](docs/skillup.png) | ![The cheapest sequence of crafts to a target skill](docs/route.png) |
 | **Queue and shopping list** | **Find any recipe** |
-| ![Queue view](docs/queue.png) | ![Find view](docs/find.png) |
+| ![The craft queue with what to take, buy and craft first](docs/queue.png) | ![Every recipe of your professions with profit and where to learn it](docs/find.png) |
 
 ## What it does
 
-- **Profit**: every recipe you know, with a verdict (Do it, Slow seller, Costly...), profit
-  after the 5% AH cut and how many sell per day.
-- **Skill-up**: recipes that give skill points, cheapest per point first, including what it
-  costs to learn them. Switch the dropdown to **Route to** for the cheapest sequence of crafts
-  up to a skill you type in.
-- **Queue**: click recipes to queue them (Shift-click adds 10). The queue works out what
-  to take from your bags, bank, mailbox and alts, what to buy, and which intermediates
-  (bolts, bars...) to craft first. Materials you already hold are used first: Medium
-  Leather in your bags becomes Heavy Leather even when the AH sells it for less. **Craft
-  next** crafts the next step in one batch.
-- **Find**: every recipe of your professions, known or not, also those above your skill:
-  where to get the pattern (AH, vendor, trainer, drop), profit each, margin (profit as a
-  share of material cost), how many sell a day, profit a day, and how many you need to sell
-  before the pattern has paid for itself.
-- **Crafted item beside recipes**: hovering a recipe in Meionomics also shows the crafted
-  item's own tooltip (its stats) next to the recipe tooltip.
-- **Item tooltips**: best way to sell an item (AH, vendor, disenchant, craft into something),
-  minimum buyout against market value, sales per day, how many you and your alts have.
-- **Auction House**: suggested posting prices on the Sell tab, and a **Meionomics** tab:
-  - **Browse**: every auction with its seller, % of market value and region sales; filter
-    to deals below market or below what a vendor pays.
-  - **Patterns**: recipes up for sale now, with the crafting panel's verdict on whether
-    they're worth learning.
-  - **Sell**: the items in your bags worth posting, each at a price that still sells within
-    a day (learnt from your own posts); one key press posts the next.
-  - **Shopping**: buys what the craft queue's shopping list still needs.
-  - **BiS upgrades**: gear on the AH that beats what you wear (needs Forever Leveling BiS).
-- **Worth window** (`/meio worth`): what every character's bags, bank, gear, mail and
-  auctions are worth.
-- **Merchants**: buttons under a vendor's window to buy the queue's materials that vendor
-  sells, and to sell junk. Nothing is bought or sold without a click.
-- **Quest rewards**: what each reward choice is worth to you.
-- **Price history**: click any result in TSM's Browse or Sniper tab and a panel opens beside
-  TSM's window: whether the price is rising, steady or falling (3-day vs 60-day average from
-  TSM), the region average and how many are listed now, the 60, 14 and 3-day averages and the
-  current lowest buyout as bars, so there's a chart from the first click, and a 30-day daily
-  chart of market value and lowest buyout. The daily chart builds from the AH scan Meionomics
-  runs when you open the Auction House, one point a day, so it fills in over the days you
-  play; items you click are tracked from then on. Needs patch 16.
+A panel beside your profession window, and a Meionomics tab at the Auction House. Uses
+TradeSkillMaster's prices when installed, else scans the AH itself.
 
-Hover any row for the details; hold Shift for the full breakdown.
+- **Profit**: every recipe with a verdict (Do it, Slow seller, Costly...), profit after
+  the AH cut and how many sell a day
+- **Skill-up**: cheapest per point first, or **Route to** a skill you type in
+- **Queue**: click recipes to queue them; it works out what to take from bags, bank, mail
+  and alts, what to buy, and crafts intermediates (bolts, bars) first. **Craft next**
+  crafts the next step
+- **Find**: every recipe of your professions, known or not, with where to get the pattern
+  and how many sales pay it back
+- **Flips**: chains that turn gold into more gold, using every character's recipes
+- **Auction House**: Browse (deals below market or vendor price), Patterns worth learning,
+  Sell (your bag items at a price that sells within a day), Shopping (what the queue
+  needs), BiS upgrades, and a Sniper with deal alarms
+- **Tooltips**: best way to sell an item (AH, vendor, disenchant, craft), sales a day, how
+  many you and your alts have; quest reward values
+- **Worth window**: what every character's bags, bank, gear, mail and auctions are worth
+- **Merchants**: buy the queue's materials, sell junk (never gear), one click each
 
-## Install
+Hover any row for details; hold Shift for the full breakdown.
 
-### 1. TradeSkillMaster (recommended)
+## Settings
 
-Install [TradeSkillMaster](https://tradeskillmaster.com) the way you normally install addons.
-For market prices, also run the TSM desktop application so it downloads auction data.
+Esc > Options > AddOns > Meionomics. Key bindings: craft next, craft one, open the panel,
+post the next Sell row.
 
-Meionomics also scans the Auction House itself when you open it (at most once every 15
-minutes): that gives it prices without TSM and builds its price history. `/meio autoscan off`
-turns this off.
+## Slash commands
 
-### 2. Meionomics
-
-**Simple way:**
-
-1. Open the [latest release](https://github.com/MeioNeiz/Meionomics/releases/latest) and
-   click `Meionomics-v<version>-forever.zip` under **Assets** to download it.
-2. Extract it into `World of Warcraft\_forever_\Interface\AddOns`, so that you end up with
-   `AddOns\Meionomics\Meionomics.toc` (not `AddOns\Meionomics\Meionomics\...`).
-3. Restart WoW fully (a `/reload` doesn't find new addons).
-
-To update, do the same again: extracting over the old folder keeps your settings.
-
-**With the TSM fixes (recommended if you use TSM):** the installer below copies Meionomics
-into your AddOns folder and applies small fixes to TSM for WoW Forever (see
-[TSM fixes](#tsm-fixes)).
-
-1. Install PowerShell 7 if you don't have it. In a terminal: `winget install Microsoft.PowerShell`
-   (Windows PowerShell 5, the one built into Windows, won't run the installer).
-2. Download this repository (green **Code** button, **Download ZIP**) and extract it anywhere.
-3. Open a terminal in the extracted folder and run:
-
-   ```
-   pwsh -ExecutionPolicy Bypass -File mods.ps1
-   ```
-
-   If WoW isn't in `C:\Program Files (x86)\World of Warcraft`, add the path to your AddOns
-   folder: `-AddOns "D:\Games\World of Warcraft\_forever_\Interface\AddOns"`.
-4. Restart WoW fully.
-
-`-ExecutionPolicy Bypass` is needed because Windows blocks scripts downloaded from the
-internet. Read `mods.ps1` first if you'd like to check what it does: it only copies the
-addon and edits the TSM files the patches name, and keeps a backup of each file it changes
-in `backups\`.
-
-**After a TSM update** run the installer again: the update undoes the fixes. To check
-without changing anything: `pwsh -ExecutionPolicy Bypass -File mods.ps1 status`. If it
-reports a patch as **BROKEN**, TSM changed that code; look for a newer version of this
-repository. To undo one fix: `pwsh -ExecutionPolicy Bypass -File mods.ps1 revert <patch-name>`.
-
-## Use
-
-- Open a profession: the panel docks beside it. `/meio craft` opens it on its own.
-- `/meio find` opens the Find view.
-- `/meio history <item>` opens the price history anywhere; `/meio history off` turns the
-  panel off.
-- `/meio options` chooses what item tooltips show; `/meio tooltips off` leaves tooltips
-  alone. `/meio` lists the other commands.
-
-Click a row to queue it, right-click to remove one, Ctrl-click to type a count, Alt-click
-to search the AH for it (or get its Wowhead link).
-
-Optional addons it uses when installed:
-[Syndicator](https://www.curseforge.com/wow/addons/syndicator) (counts on your alts) and
-[Questie](https://www.curseforge.com/wow/addons/questie) (which vendors sell a pattern and
-which mobs drop it; without it some patterns show "source unknown").
+- `/meio`: every command
+- `/meio craft`: the crafting panel (`/meio craft next`, `/meio craft clear`...)
+- `/meio find [name]`: every recipe, known or not
+- `/meio flips [name]`: crafting chains that make money, all characters
+- `/meio whatif [profession] [skill]`: the panel at another skill
+- `/meio worth`: the Worth window
+- `/meio history <item>`: an item's price history
+- `/meio snipe`: deal alarms and the AH tab's Sniper
+- `/meio quote <item>`, `/meio sells <item>`, `/meio posts`: sell or keep, how fast it
+  sells, how your posts sold
+- `/meio autoscan on|off`, `/meio autoprice on|off`: AH scan on opening, Sell tab prices
+- `/meio source`, `/meio sell`, `/meio mat`: where prices come from, TSM price strings
+- `/meio legacy`: the Working Overtime talent's effect on skill-ups
+- `/meio tooltips on|off`, `/meio fields`, `/meio ahdetail on|off`: what tooltips show
+- `/meio reset`: windows back where they start
 
 ## TSM fixes
+
+Optional fixes to TSM for WoW Forever, applied by `mods.ps1` from the
+[GitHub repository](https://github.com/MeioNeiz/Meionomics#install).
 
 | Patch | Fixes |
 |---|---|
@@ -134,10 +66,40 @@ which mobs drop it; without it some patterns show "source unknown").
 | 11-tsm-alt-realm-tooltip | Settings > Tooltip crashed on alt realm lines |
 | 13-tsm-always-compare | TSM item tooltips compare with your equipped gear without holding Shift |
 | 15-apphelper-without-tsm | TSM's AppHelper loads without TSM, so Meionomics can read the desktop app's prices on its own |
-| 16-tsm-auction-selected-hook | Lets Meionomics know which result you clicked in TSM's auction window (for the price history panel) |
-| 17-tsm-recipe-row-tooltip | Hovering a recipe in TSM's profession window shows the crafted item's tooltip (or the enchant's spell) |
+| 16-tsm-auction-selected-hook | Clicking a result in TSM's auction window opens Meionomics' price history |
+| 17-tsm-recipe-row-tooltip | Hovering a recipe in TSM's profession window shows the crafted item's tooltip |
 
-A patch for an addon you don't have is skipped.
+## Install
+
+Use your addon manager (CurseForge, Wago), or unzip a
+[GitHub release](https://github.com/MeioNeiz/Meionomics/releases/latest) into
+`World of Warcraft\_forever_\Interface\AddOns` and restart WoW fully. Optional:
+[TradeSkillMaster](https://tradeskillmaster.com) and its desktop app for market prices,
+[Syndicator](https://www.curseforge.com/wow/addons/syndicator) for counts on alts,
+[Questie](https://www.curseforge.com/wow/addons/questie) for pattern sources.
+
+**With the TSM fixes:** install PowerShell 7 (`winget install Microsoft.PowerShell`),
+download this repository (green **Code** button, **Download ZIP**), extract it and run in
+that folder:
+
+```
+pwsh -ExecutionPolicy Bypass -File mods.ps1
+```
+
+It copies Meionomics into your AddOns folder and applies the fixes, keeping a backup of
+each TSM file it changes in `backups\`. Another WoW folder: add
+`-AddOns "D:\Games\World of Warcraft\_forever_\Interface\AddOns"`. A TSM update undoes the
+fixes: run it again. `mods.ps1 status` checks without changing anything; a **BROKEN** patch
+means TSM changed that code (look for a newer version here). `mods.ps1 revert <patch-name>`
+undoes one.
+
+## Feedback
+
+Bugs and ideas: [GitHub issues](https://github.com/MeioNeiz/Meionomics/issues)
+
+## More Meio addons
+
+[Meio TrainerCompare](https://www.curseforge.com/wow/addons/trainercompare) | [Meio Next Stop](https://www.curseforge.com/wow/addons/leavebutton) | [Meio AutoRank](https://www.curseforge.com/wow/addons/meio-autorank) | [Meio MeterHover](https://www.curseforge.com/wow/addons/meterhover) | [Meio Map](https://addons.wago.io/addons/meiomap) | [Meio Alts](https://addons.wago.io/addons/meioalts) | [Meio DPS](https://addons.wago.io/addons/meiodps) | [Meio Plates](https://addons.wago.io/addons/meioplates) | [Meio Hub](https://addons.wago.io/addons/meiohub) | [Meio Pets](https://addons.wago.io/addons/meiopets) | [Meio Stats](https://addons.wago.io/addons/meiostats) | [Meio Bags](https://addons.wago.io/addons/meiobags) | [Meio Fixes](https://addons.wago.io/addons/meiofixes) | [Meio Flight Times](https://addons.wago.io/addons/meioflighttimes)
 
 ## Licence
 

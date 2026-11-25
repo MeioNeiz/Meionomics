@@ -1,8 +1,9 @@
 -- Blizzard's Sell tab. When an item goes in and the AH's search for it answers, the price is set
 -- from AuctionRules' quote and a line under it says why in a player's words (TSM Auctioning's
 -- minimum / normal / maximum price); hovering the line shows the rule's sums. A price the player
--- typed is never replaced and Post is never blocked. Posting an item makes it watched (daily
--- history).
+-- typed is never replaced and Post is never blocked. The next bag of an item he posted at his own
+-- price gets that price again, until he posts at the quote or closes the AH. Posting an item
+-- makes it watched (daily history).
 -- Forever lists everything as non-commodity items, so only ItemSellFrame is hooked; TSM's own AH
 -- window doesn't show the Sell tab, so nothing here runs while it's in use.
 --   /meio autoprice on|off
@@ -152,6 +153,9 @@ end
 ------------------------------------------------------------------------------ The hook
 -- items whose search has answered since they went in; an empty answer has no results to show it
 local answered = {}
+-- item key -> the price he last posted it at from the Sell tab, when not our quote, this AH
+-- visit: Blizzard resets the box for each bag dropped in after a post
+local his = {}
 
 -- the price history panel beside the AH, with its Selling column for what's in the box
 local function ShowPanel(sf)
@@ -175,7 +179,7 @@ local function OnPriceSelection(sf)
   local vkey = A.Key(C_Item.GetItemLink(loc))
   if sf.meioItem ~= itemID or sf.meioKey ~= vkey then
     sf.meioItem, sf.meioPrice, sf.meioLive, sf.meioFloor = itemID, nil, nil, nil
-    sf.meioKey = vkey
+    sf.meioKey, sf.meioTyped, sf.meioSuggest = vkey, nil, nil
     answered[itemID] = nil
   end
   -- the panel shows from the moment an item goes in, before any search answers
@@ -205,15 +209,18 @@ local function OnPriceSelection(sf)
     action, tone, text = "none", "grey", "none up and no price history, so Blizzard's is kept"
   end
   local amount = sf.PriceInput:GetAmount()
-  -- Blizzard's default, its pick from the list (0 when it picks "none available"), or ours
-  local untouched = amount == 0 or amount == sf:GetDefaultPrice()
+  -- Blizzard's default, its pick from the list (0 when it picks "none available"), or ours;
+  -- 0 after he typed is a box he cleared to retype
+  local untouched = (amount == 0 and not sf.meioTyped) or amount == sf:GetDefaultPrice()
     or amount == sf:GetSearchResultPrice() or amount == sf.meioPrice
-  if price and untouched then
-    sf.PriceInput:SetAmount(price)
-    sf.meioPrice = price
+  local want = his[sf.meioKey or itemID] or price
+  if want and untouched then
+    sf.PriceInput:SetAmount(want)
+    sf.meioPrice = want
     sf:UpdatePostState()
   end
-  Say(sf, action, price, tone, text, price and not untouched)
+  sf.meioSuggest = price
+  Say(sf, action, price, tone, text, price and sf.PriceInput:GetAmount() ~= price)
   sf.meioLive, sf.meioFloor = live, q.floor
   ShowPanel(sf)
 end
@@ -283,6 +290,12 @@ local function Hook()
   hooksecurefunc(sf, "UpdatePriceSelection", function(self) Safe(OnPriceSelection, self) end)
   hooksecurefunc(sf, "UpdatePostState", OnPostState)
   sf:HookScript("OnHide", OnSellHide)
+  local mi = sf.PriceInput and sf.PriceInput.MoneyInputFrame
+  for _, box in ipairs(mi and { mi.GoldBox, mi.SilverBox, mi.CopperBox } or {}) do
+    box:HookScript("OnTextChanged", function(_, userInput)
+      if userInput then sf.meioTyped = true end
+    end)
+  end
   local cf = AuctionHouseFrame.CommoditiesSellFrame
   if cf and cf.SetItem then
     hooksecurefunc(cf, "SetItem", function(self) Safe(OnCommodityItem, self) end)
@@ -292,19 +305,48 @@ local function Hook()
   FixCommodityDeposit()
 end
 
--- posted: worth daily history from now on
-hooksecurefunc(C_AuctionHouse, "PostItem", function(loc)
-  local ok, id = pcall(C_Item.GetItemID, loc)
-  if ok and id then A.Watch(id) end
-end)
+-- a Sell tab post: his price for the next bag, or none if it was our quote. Only with a quote
+-- to compare, else Blizzard's default would count as his
+local function Remember(id, buyout)
+  local sf = AuctionHouseFrame and AuctionHouseFrame.ItemSellFrame
+  if not (buyout and sf and sf:IsVisible() and sf.meioItem == id and sf.meioSuggest) then
+    return
+  end
+  local k, suggest = sf.meioKey or id, sf.meioSuggest
+  return function() his[k] = buyout ~= suggest and buyout or nil end
+end
 
--- runs alongside the Sell tab's own handler, in either order: mark, then redo the pick
+-- posted: worth daily history from now on. A post Blizzard holds for its price warning only
+-- counts once he confirms it (ConfirmPostItem); StartPost caches it as pending after this hook
+hooksecurefunc(C_AuctionHouse, "PostItem", function(loc, _, _, _, buyout)
+  local ok, id = pcall(C_Item.GetItemID, loc)
+  if not (ok and id) then return end
+  A.Watch(id)
+  local commit = Remember(id, buyout)
+  if not commit then return end
+  local sf = AuctionHouseFrame.ItemSellFrame
+  C_Timer.After(0, function()
+    if not sf.pendingPost then commit() end
+  end)
+end)
+if C_AuctionHouse.ConfirmPostItem then
+  hooksecurefunc(C_AuctionHouse, "ConfirmPostItem", function(loc, _, _, _, buyout)
+    local ok, id = pcall(C_Item.GetItemID, loc)
+    local commit = ok and id and Remember(id, buyout)
+    if commit then commit() end
+  end)
+end
+M.On("AUCTION_HOUSE_CLOSED", function() wipe(his) end)
+
+-- runs alongside the Sell tab's own handler, in either order: mark, then redo the pick once
+-- Blizzard's has run (it clears the row price he clicked; before that it reads as its pick)
 M.On("ITEM_SEARCH_RESULTS_UPDATED", function(_, key)
   local sf = AuctionHouseFrame and AuctionHouseFrame.ItemSellFrame
   if not (key and sf and sf:IsVisible() and sf.meioItem == key.itemID) then return end
   answered[key.itemID] = true
-  local ok, err = pcall(OnPriceSelection, sf)
-  if not ok then geterrorhandler()(err) end
+  C_Timer.After(0, function()
+    if sf:IsVisible() and sf.meioItem == key.itemID then Safe(OnPriceSelection, sf) end
+  end)
 end)
 
 if C_AddOns.IsAddOnLoaded("Blizzard_AuctionHouseUI") then Hook() end

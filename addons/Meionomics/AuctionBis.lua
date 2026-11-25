@@ -64,6 +64,7 @@ local function WishList()
   local db = ForeverLevelingBiSDB
   if type(db) ~= "table" or type(db.chars) ~= "table" then return {} end
   local name = GetUnitName and GetUnitName("player", true) or UnitName("player")
+  if canaccessvalue and not canaccessvalue(name) then return {} end
   local char = db.chars[name .. "-" .. GetRealmName()]
   return char and type(char.wish) == "table" and char.wish or {}
 end
@@ -316,7 +317,7 @@ local function Filter(f, anchor)
   function g.Update()
     local s = PickedSlot()
     slot:SetText(s and s.label or "All slots")
-    if not top:HasFocus() then top:SetText(Top()) end
+    if not top:HasFocus() then top:SetText(tostring(Top())) end
   end
   g.slot, g.top = slot, top
   g.Update()

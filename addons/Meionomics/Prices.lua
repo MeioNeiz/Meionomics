@@ -185,7 +185,7 @@ end
 -- TSM keeps its data to itself: watch it go past for the download times. TSM replaces the
 -- global at login, once AppHelper is done.
 if TSM_APPHELPER_LOAD_DATA == nil then
-  TSM_APPHELPER_LOAD_DATA = P.LoadAppData
+  _G.TSM_APPHELPER_LOAD_DATA = P.LoadAppData
 else
   local tsm = TSM_APPHELPER_LOAD_DATA
   TSM_APPHELPER_LOAD_DATA = function(tag, where, data)
@@ -259,13 +259,45 @@ function P.Live(itemID)
   if own.age <= P.LIVE_FOR then return own end
 end
 
--- the cheapest listing in the newest data, however old (P.Age says how old): our sighting's
--- cheapest rival when at least as new as TSM's realm data, else TSM's min buyout
-function P.Current(itemID)
-  local own = Newest(itemID)
-  if own then return own.comp end
-  return P.Get(itemID, "minBuyout")
+-- Stray listings: under half of every average (realm market, region sales), fewer than
+-- STRAY_QTY units that low. Snipers take them: no price to buy a stack at or sell against.
+-- TSM's realm data has no depth, so its min that low is stray with nothing known above it;
+-- our sighting's cheapest rivals (A.Top) give the first listing above.
+P.STRAY, P.STRAY_QTY = 0.5, 10
+
+local function StrayLine(itemID)
+  local avg
+  for _, what in ipairs({ "market", "regionSale", "regionMarket" }) do
+    local v = P.Get(itemID, what)
+    if v and v < (avg or math.huge) then avg = v end
+  end
+  return avg and avg * P.STRAY
 end
+
+-- the newest data's cheapest rival -> unit (nil: none, or only strays known), stray passed over
+local function Cheapest(itemID)
+  local own = Newest(itemID)
+  local min
+  if own then min = own.comp else min = P.Get(itemID, "minBuyout") end
+  local line = min and StrayLine(itemID)
+  if not (line and min < line) then return min, false end
+  local top, tt
+  if own then top, tt = M.Auction.Top(itemID) end
+  if not (top and tt == own.t) then return nil, true end
+  local cheap = 0
+  for _, l in ipairs(top) do
+    if l[1] >= line then return l[1], true end
+    cheap = cheap + l[2]
+    if cheap >= P.STRAY_QTY then return min, false end
+  end
+  return nil, true
+end
+
+function P.Stray(itemID) return select(2, Cheapest(itemID)) end
+
+-- the cheapest listing in the newest data, however old (P.Age says how old), strays passed
+-- over: our sighting's cheapest rival when at least as new as TSM's realm data, else TSM's min
+function P.Current(itemID) return (Cheapest(itemID)) end
 
 -- how old the item's realm AH price is -> seconds, and true when it's our own sighting rather
 -- than TSM's app data; nil when neither has a time
@@ -364,6 +396,7 @@ P.SELLS_RATE = 0.1 -- region sale rate under this: most listings expire
 -- the cheaper of min buyout and market (one overpriced listing isn't a price), after the cut
 function P.AHValue(itemID)
   local min, market = P.Get(itemID, "minBuyout"), P.Get(itemID, "market")
+  if min and P.Stray(itemID) then min = P.Current(itemID) end
   local v = min and market and math.min(min, market) or min or market
     or P.Get(itemID, "regionMarket")
   return v and math.floor(v * (1 - P.AH_CUT) + 0.5)
@@ -489,18 +522,27 @@ end
 -- average value of what it disenchants into, mats at P.AHValue (dust and essences sell, so no
 -- P.Sells check); nil when it can't be disenchanted or no mat has a price
 function P.Disenchant(itemID)
+  local total, any = 0, false
+  for _, y in ipairs(P.DisenchantYield(itemID) or {}) do
+    if y.value then total, any = total + y.value * y.n, true end
+  end
+  return any and math.floor(total + 0.5) or nil
+end
+
+-- what one disenchants into on average -> { { mat, n, value (P.AHValue each) }, ... }, nil
+-- when it can't be disenchanted
+function P.DisenchantYield(itemID)
   local _, _, quality, ilvl, _, _, _, _, _, _, _, classID = C_Item.GetItemInfo(Id(itemID))
   if not (quality and ilvl and (classID == 2 or classID == 4)) then return nil end
-  local total, any = 0, false
+  local out = {}
   for mat, rows in pairs(DISENCHANT) do
     for _, r in ipairs(rows) do
       if r[1] == classID and r[2] == quality and ilvl >= r[3] and ilvl <= r[4] then
-        local v = P.AHValue(mat)
-        if v then total, any = total + v * r[5], true end
+        out[#out + 1] = { mat = mat, n = r[5], value = P.AHValue(mat) }
       end
     end
   end
-  return any and math.floor(total + 0.5) or nil
+  return out
 end
 
 -- this character can disenchant it now; and the skill it needs
@@ -659,7 +701,8 @@ P.EVIDENCE_AGING = 86400
 --   sale, buy = { price, qty, time, n }       your last auction sale / buy (TSM ledger)
 --   avgSell, avgBuy                           TSM accounting averages (TSM loaded)
 --   level = "high" | "medium" | "low", reasons = { "1 seller", ... }, the worst first
---   price: conservative, the lowest of the fresh min buyout, market and region sale average
+--   price: conservative, the lowest of the fresh min buyout (no strays), market and
+--          region sale average
 -- Realm sales aren't known (see P.SellRate), so sold/day is the region's. nil with no AH data.
 function P.Evidence(itemID)
   if not itemID then return nil end
@@ -702,8 +745,10 @@ function P.Evidence(itemID)
   elseif e.rate and e.rate < 0.25 then
     medium[#medium + 1] = Pct(e.rate) .. " of listings sell"
   end
+  e.stray = P.Stray(itemID)
   if e.spread then
     local text = "min " .. Pct(e.spread) .. (e.spread < 0 and " under" or " over") .. " market"
+      .. (e.stray and " (stray, ignored)" or "")
     local far = math.abs(e.spread)
     if far >= 0.5 then Spread(text) elseif far >= 0.25 then medium[#medium + 1] = text end
   end
@@ -738,8 +783,10 @@ function P.Evidence(itemID)
   e.reasons = low
   for _, r in ipairs(medium) do e.reasons[#e.reasons + 1] = r end
 
-  local fresh = e.min and (e.from == "scan" or (e.realmAge or math.huge) <= P.EVIDENCE_OLD)
-  for _, v in ipairs({ fresh and e.min or false, e.market or false,
+  local listed = e.min
+  if e.stray then listed = P.Current(itemID) end
+  local fresh = listed and (e.from == "scan" or (e.realmAge or math.huge) <= P.EVIDENCE_OLD)
+  for _, v in ipairs({ fresh and listed or false, e.market or false,
     e.regionSale or e.regionMarket or false }) do
     if v and v < (e.price or math.huge) then e.price = v end
   end

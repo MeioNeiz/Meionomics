@@ -932,7 +932,7 @@ local function Fill(key)
   panel:SetHeight(h)
 end
 
--- beside TSM's window, on the side TSMBrowse isn't (outside it when there's only room on one)
+-- beside TSM's window, on the side MeioTSMBrowse isn't (outside it when there's only room on one)
 local function Dock(window)
   panel:ClearAllPoints()
   -- clamped, it can overlap the window: same strata so Raise() puts it on top
@@ -955,7 +955,8 @@ local function Dock(window)
   local roomRight = (UIParent:GetRight() or 1920) - right
   local onRight = roomRight >= panel:GetWidth() + 4 or roomRight >= left
   local anchor = window
-  local browse = TSMBrowsePanel and TSMBrowsePanel:IsShown() and TSMBrowsePanel
+  local browse = _G.MeioTSMBrowsePanel
+  if not (browse and browse:IsShown()) then browse = nil end
   if browse and ((browse:GetLeft() or 0) >= right) == onRight then anchor = browse end
   if onRight then
     panel:SetPoint("TOPLEFT", anchor, "TOPRIGHT", 2, 0)
