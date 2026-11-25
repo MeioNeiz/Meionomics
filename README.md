@@ -1,13 +1,15 @@
 # Meionomics
 
-The cheapest way to level your professions in WoW Forever, plus what to craft for profit,
-what to sell and what to buy.
+The cheapest way to level your professions in WoW Forever, from your own Auction House's
+prices: each crafting profession to 300 is three Legacy points, for less gold than the
+guides. Plus what to craft for profit, what to sell and what to buy.
 
 ## The cheapest way to level your professions
 
-Meionomics plans every skill-up from your own Auction House's prices: which recipe at each
-step, what to buy, what to learn and what to sell back. With the same prices and the same
-skill-up chances, it costs less gold than following the guides.
+Meionomics plans every skill-up: which recipe at each step, what to buy, what to learn and
+what to sell back. With the same prices and the same
+skill-up chances, it costs less gold than following the guides: Tailoring 1 to 300 takes
+362g, against 394g, 940g and 531g.
 
 ![Gold spent levelling 1 to 300 with the same AH prices and skill-up chances: Tailoring
 362g with Meionomics against 394g, 940g and 531g with the guides; Alchemy 26g against
@@ -15,7 +17,8 @@ skill-up chances, it costs less gold than following the guides.
 
 **Levelling professions for Legacy points?** Alchemy, Blacksmithing, Enchanting,
 Engineering, Leatherworking and Tailoring each give a Legacy point at 150, 225 and 300:
-18 points for your account. Meionomics gets you to each milestone for the least gold.
+18 points for your account. Meionomics gets you to each milestone for the least gold, and
+its skill-up chances count your Working Overtime Legacy perk.
 
 ## Route to a skill
 
@@ -115,6 +118,7 @@ post the next Sell row.
 - `/meio worth`: the Worth window
 - `/meio snipe`: deal alarms and the AH tab's Sniper
 - `/meio quote <item>`: sell or keep
+- `/meio legacy`: how Working Overtime applies and what it saves
 
 ## TSM fixes
 
