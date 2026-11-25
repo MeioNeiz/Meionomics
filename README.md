@@ -2,11 +2,8 @@
 
 What to craft for profit or skill-ups, what to sell and what to buy, for WoW Forever.
 
-| Skill-up | Route to a target |
-|---|---|
-| ![Tailoring skill-ups, cheapest per point first, with a verdict per recipe](docs/skillup.png) | ![The cheapest sequence of crafts to a target skill](docs/route.png) |
-| **Queue and shopping list** | **Find any recipe** |
-| ![The craft queue with what to take, buy and craft first](docs/queue.png) | ![Every recipe of your professions with profit and where to learn it](docs/find.png) |
+![The Meionomics panel beside Tailoring at 151: recipes ranked by cost per skill point, each
+with a verdict (Do it, If levelling, Costly), chance of a skill-up and cost](docs/skillup.png)
 
 ## What it does
 
@@ -40,20 +37,12 @@ post the next Sell row.
 ## Slash commands
 
 - `/meio`: every command
-- `/meio craft`: the crafting panel (`/meio craft next`, `/meio craft clear`...)
+- `/meio craft`: the crafting panel
 - `/meio find [name]`: every recipe, known or not
 - `/meio flips [name]`: crafting chains that make money, all characters
-- `/meio whatif [profession] [skill]`: the panel at another skill
 - `/meio worth`: the Worth window
-- `/meio history <item>`: an item's price history
 - `/meio snipe`: deal alarms and the AH tab's Sniper
-- `/meio quote <item>`, `/meio sells <item>`, `/meio posts`: sell or keep, how fast it
-  sells, how your posts sold
-- `/meio autoscan on|off`, `/meio autoprice on|off`: AH scan on opening, Sell tab prices
-- `/meio source`, `/meio sell`, `/meio mat`: where prices come from, TSM price strings
-- `/meio legacy`: the Working Overtime talent's effect on skill-ups
-- `/meio tooltips on|off`, `/meio fields`, `/meio ahdetail on|off`: what tooltips show
-- `/meio reset`: windows back where they start
+- `/meio quote <item>`: sell or keep
 
 ## TSM fixes
 
@@ -99,7 +88,7 @@ Bugs and ideas: [GitHub issues](https://github.com/MeioNeiz/Meionomics/issues)
 
 ## More Meio addons
 
-[Meio TrainerCompare](https://www.curseforge.com/wow/addons/trainercompare) | [Meio Next Stop](https://www.curseforge.com/wow/addons/leavebutton) | [Meio AutoRank](https://www.curseforge.com/wow/addons/meio-autorank) | [Meio MeterHover](https://www.curseforge.com/wow/addons/meterhover) | [Meio Map](https://addons.wago.io/addons/meiomap) | [Meio Alts](https://addons.wago.io/addons/meioalts) | [Meio DPS](https://addons.wago.io/addons/meiodps) | [Meio Plates](https://addons.wago.io/addons/meioplates) | [Meio Hub](https://addons.wago.io/addons/meiohub) | [Meio Pets](https://addons.wago.io/addons/meiopets) | [Meio Stats](https://addons.wago.io/addons/meiostats) | [Meio Bags](https://addons.wago.io/addons/meiobags) | [Meio Fixes](https://addons.wago.io/addons/meiofixes) | [Meio Flight Times](https://addons.wago.io/addons/meioflighttimes)
+[Meio Trainer Compare](https://www.curseforge.com/wow/addons/trainercompare) | [Meio Next Stop](https://www.curseforge.com/wow/addons/leavebutton) | [Meio Auto Rank](https://www.curseforge.com/wow/addons/meio-autorank) | [Meio Meter Hover](https://www.curseforge.com/wow/addons/meterhover) | [Meio Map](https://addons.wago.io/addons/meiomap) | [Meio Alts](https://addons.wago.io/addons/meioalts) | [Meio DPS](https://addons.wago.io/addons/meiodps) | [Meio Plates](https://addons.wago.io/addons/meioplates) | [Meio Hub](https://addons.wago.io/addons/meiohub) | [Meio Pets](https://addons.wago.io/addons/meiopets) | [Meio Stats](https://addons.wago.io/addons/meiostats) | [Meio Bags](https://addons.wago.io/addons/meiobags) | [Meio Fixes](https://addons.wago.io/addons/meiofixes) | [Meio Flight Times](https://addons.wago.io/addons/meioflighttimes) | [Meio Tooltip Fold](https://addons.wago.io/addons/meiotooltipfold) | [Meio Auto Run Turn](https://addons.wago.io/addons/meioautorunturn) | [Meio Mail](https://addons.wago.io/addons/meiomail) | [Meio QoL](https://addons.wago.io/addons/meioqol) | [Meio TSM Browse](https://addons.wago.io/addons/tsmbrowse) | [Meio Shards](https://addons.wago.io/addons/meioshards)
 
 ## Licence
 
