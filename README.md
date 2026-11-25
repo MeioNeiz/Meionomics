@@ -29,6 +29,15 @@ TradeSkillMaster's prices when installed, else scans the AH itself.
 
 Hover any row for details; hold Shift for the full breakdown.
 
+## Coming soon
+
+- Prices follow your own AH searches for cloth, herbs and ore, so craft and flip profits
+  match what the AH shows
+- Invest: where a daily pot of gold makes the most each day
+
+![Coming soon: Craft flips window in Invest view: the best plan for 10 gold a day, then
+what to buy and craft](docs/soon.png)
+
 ## Settings
 
 Esc > Options > AddOns > Meionomics. Key bindings: craft next, craft one, open the panel,
