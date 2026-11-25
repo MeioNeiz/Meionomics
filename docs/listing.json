@@ -1,6 +1,6 @@
 {
   "title": "Meionomics",
-  "summary": "Cheapest skill-ups and best-profit crafts, plus AH buy and sell help.",
+  "summary": "The cheapest way to level your professions, plus what to craft, sell and buy at the AH.",
   "cfCategory": "Professions",
   "cfExtra": [
     "Auction & Economy"
@@ -11,19 +11,49 @@
   ],
   "gallery": [
     {
-      "file": "skillup.png",
-      "title": "Skill-up",
-      "description": "Tailoring recipes that give skill points, cheapest per point first, each with a verdict"
+      "file": "cost.png",
+      "title": "Cheapest levelling",
+      "description": "Gold spent levelling Tailoring, Alchemy and Leatherworking 1 to 300: Meionomics against the guides, same AH prices and skill-up chances"
     },
     {
       "file": "route.png",
-      "title": "Route to a target",
-      "description": "The cheapest sequence of crafts up to the skill you type in"
+      "title": "Route to a skill",
+      "description": "The cheapest route from Tailoring 151 to 225: recipe for each stretch, crafts, learning cost and materials"
+    },
+    {
+      "file": "route-cost.png",
+      "title": "What the route costs",
+      "description": "Materials, learning and what selling the crafts brings back, for the whole route"
+    },
+    {
+      "file": "skillup.png",
+      "title": "Skill-up",
+      "description": "Known and learnable recipes, cheapest per skill point first, each with a verdict and skill-up chance"
     },
     {
       "file": "queue.png",
       "title": "Queue and shopping list",
-      "description": "Queued crafts with what to take from bags, bank and alts, and what to buy"
+      "description": "Queued crafts in order with what to take from bags, bank and alts, and what to buy"
+    },
+    {
+      "file": "shopping.png",
+      "title": "AH shopping",
+      "description": "Every listing of the queue's materials against market price, buy or too dear"
+    },
+    {
+      "file": "sniper.png",
+      "title": "Sniper",
+      "description": "Listings under half their market price, sorted by profit, with deal alarms"
+    },
+    {
+      "file": "sell.png",
+      "title": "Sell",
+      "description": "Bag items priced to sell within a day, posted one click at a time"
+    },
+    {
+      "file": "flips.png",
+      "title": "Flips",
+      "description": "Crafting chains that turn gold into more gold, with the breakdown of one"
     },
     {
       "file": "find.png",

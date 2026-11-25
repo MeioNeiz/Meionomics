@@ -1,29 +1,90 @@
 # Meionomics
 
-What to craft for profit or skill-ups, what to sell and what to buy, for WoW Forever.
+The cheapest way to level your professions in WoW Forever, plus what to craft for profit,
+what to sell and what to buy.
 
-**Early test, not ready yet.** Expect rough edges; feedback welcome on GitHub issues.
+## The cheapest way to level your professions
 
-![The Meionomics panel beside Tailoring at 151: recipes ranked by cost per skill point, each
-with a verdict (Do it, If levelling, Costly), chance of a skill-up and cost](docs/skillup.png)
+Meionomics plans every skill-up from your own Auction House's prices: which recipe at each
+step, what to buy, what to learn and what to sell back. With the same prices and the same
+skill-up chances, it costs less gold than following the guides.
 
-## What it does
+![Gold spent levelling 1 to 300 with the same AH prices and skill-up chances: Tailoring
+362g with Meionomics against 394g, 940g and 531g with the guides; Alchemy 26g against
+32g, 51g and 37g; Leatherworking 173g against 254g, 1049g and 386g](docs/cost.png)
 
-A panel beside your profession window, and a Meionomics tab at the Auction House. Uses
-TradeSkillMaster's prices when installed, else scans the AH itself.
+**Levelling professions for Legacy points?** Alchemy, Blacksmithing, Enchanting,
+Engineering, Leatherworking and Tailoring each give a Legacy point at 150, 225 and 300:
+18 points for your account. Meionomics gets you to each milestone for the least gold.
+
+## Route to a skill
+
+Type the skill you want and Meionomics gives the cheapest route there: which recipe for
+each stretch of skill, how many crafts, what to learn and every material in one list.
+
+![Route from Tailoring 151 to 225: seven steps from Green Silk Pack to Soul Pouch, each
+with crafts, learning cost and cost per point, and the materials to buy](docs/route.png)
+
+Hover the summary for what the route costs and what selling the crafts brings back.
+
+![The route's breakdown: materials to buy 104g, learning 4g 36s, crafts sold 120g, a net
+gain of 10g 66s](docs/route-cost.png)
+
+## Skill-up
+
+Every recipe that still gives points, known or learnable, cheapest per point first, with
+a verdict (Do it, If levelling, Costly), the chance of a skill-up and where to learn it.
+
+![Tailoring at 151: known and learnable recipes ranked by cost per skill point, each with
+a verdict and its skill-up chance](docs/skillup.png)
+
+## Queue
+
+Click recipes or a whole route to queue them. The queue works out what to take from bags,
+bank, mail and alts and what to buy, and crafts intermediates (bolts, bars) first.
+**Craft next** crafts the next step.
+
+![The queued route: crafts in order with what each still needs, then the shopping list
+with what bags, bank and alts already hold](docs/queue.png)
+
+## Auction House
+
+A Meionomics tab at the Auction House. Uses TradeSkillMaster's prices when installed, else
+scans the AH itself.
+
+**Shopping** buys what the queue needs, cheapest first, and skips listings priced too
+high.
+
+![Shopping: every listing of the queue's materials with its price against market, and buy
+or too dear for each](docs/shopping.png)
+
+**Sniper** watches new listings and sounds an alarm for deals below market or vendor
+price.
+
+![Sniper: listings under half their market price, sorted by profit](docs/sniper.png)
+
+**Sell** prices your bag items to sell within a day and posts them one click at a time.
+
+![Sell: bag items with the price to post at, the cheapest listing, the deposit and the
+chance it sells](docs/sell.png)
+
+Also: Browse (deals below market or vendor price), Patterns worth learning and BiS
+upgrades.
+
+## Flips
+
+Crafting chains that turn gold into more gold, using every character's recipes: profit,
+margin, gold per hour and how many a day the AH can take.
+
+![Craft flips ranked by profit, with the breakdown of one: what to buy, who crafts it,
+what it sells for and the profit per craft](docs/flips.png)
+
+## Also
 
 - **Profit**: every recipe with a verdict (Do it, Slow seller, Costly...), profit after
   the AH cut and how many sell a day
-- **Skill-up**: cheapest per point first, or **Route to** a skill you type in
-- **Queue**: click recipes to queue them; it works out what to take from bags, bank, mail
-  and alts, what to buy, and crafts intermediates (bolts, bars) first. **Craft next**
-  crafts the next step
 - **Find**: every recipe of your professions, known or not, with where to get the pattern
   and how many sales pay it back
-- **Flips**: chains that turn gold into more gold, using every character's recipes
-- **Auction House**: Browse (deals below market or vendor price), Patterns worth learning,
-  Sell (your bag items at a price that sells within a day), Shopping (what the queue
-  needs), BiS upgrades, and a Sniper with deal alarms
 - **Tooltips**: best way to sell an item (AH, vendor, disenchant, craft), sales a day, how
   many you and your alts have; quest reward values
 - **Worth window**: what every character's bags, bank, gear, mail and auctions are worth
