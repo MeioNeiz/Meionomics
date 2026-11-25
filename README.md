@@ -2,6 +2,8 @@
 
 What to craft for profit or skill-ups, what to sell and what to buy, for WoW Forever.
 
+**Early test, not ready yet.** Expect rough edges; feedback welcome on GitHub issues.
+
 ![The Meionomics panel beside Tailoring at 151: recipes ranked by cost per skill point, each
 with a verdict (Do it, If levelling, Costly), chance of a skill-up and cost](docs/skillup.png)
 
