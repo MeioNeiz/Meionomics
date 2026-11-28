@@ -43,7 +43,7 @@ local function Active() return B.state.view == "sell" end
 local function Queued()
   local q = {}
   if C.QueueCount() > 0 then
-    for _, m in ipairs(C.Shopping().mats) do q[m.id] = true end
+    for _, m in ipairs(C.Shopping(true).mats) do q[m.id] = true end
   end
   return q
 end

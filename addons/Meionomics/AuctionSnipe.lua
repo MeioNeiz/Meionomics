@@ -1,10 +1,10 @@
 -- Sniper: deals on the AH, and alarms when one shows up.
 -- A deal: a rival listing at or under a watched item's max price (/meio snipe add), under
--- what a vendor pays, or under X% of market with at least the minimum profit after the AH cut
--- (market deals only where Evidence trusts the market). Every listing Meionomics sees is
--- judged: GetAll scans (the cheapest 10 rival listings per item), any item search or browse,
--- whichever window made it. A new deal: chat line, raid warning sound (Master channel), taskbar
--- flash; a big one (profit >= big) also a raid warning on screen, and with "phone" on a
+-- what a vendor pays, or under X% of its resale price (P.Resale: market or region sales,
+-- whichever is lower) with at least the minimum profit after the AH cut, where it's trusted.
+-- Every listing Meionomics sees is judged: GetAll scans (the cheapest 10 rival listings per
+-- item), any item search or browse, whichever window made it. A new deal: chat line, raid
+-- warning sound (Master channel), taskbar flash; a big one (profit >= big) also a raid warning on screen, and with "phone" on a
 -- screenshot showing the deal with a magenta square in the top left corner, for the Windows
 -- companion (LocalMods companion/MeioSnipe.exe) to push out. Addons can't reach the network or
 -- write files while the game runs; a screenshot is the one thing that leaves at once.
@@ -42,16 +42,22 @@ function M.OnLoad()
 end
 
 ------------------------------------------------------------------------------ Judging
--- Evidence says whether the market is worth betting on; a listing far under market makes its
--- own "min under market" spread, which alone doesn't count against it
-local trust = {}
-local function Trusted(key)
-  local t = trust[key]
-  if t and GetTime() - t[2] < TRUST_TTL then return t[1] end
-  local ev = P.Evidence(key)
-  local ok = ev and ev.market and (ev.level ~= "low" or ev.spreadOnly) and true or false
-  trust[key] = { ok, GetTime() }
-  return ok
+-- a realm market far over region sales is asking, not getting: the lower one is bet on
+local resale = {}
+local function Resale(key)
+  local t = resale[key]
+  if not (t and GetTime() - t.at < TRUST_TTL) then
+    local price, basis = P.Resale(key)
+    t = { price = price, basis = basis, at = GetTime() }
+    resale[key] = t
+  end
+  return t.price, t.basis
+end
+
+-- resale is never over market, so market rules most listings out without Evidence
+local function UnderMarket(key, unit, pct)
+  local market = P.Get(key, "market")
+  return market and unit <= market * pct / 100
 end
 
 -- worth reading its auctions: the cheapest of an item, qty unknown, so no profit test
@@ -60,34 +66,37 @@ function Sn.Candidate(key, unit)
   local max = cfg.watch[A.Base(key)]
   if max and unit <= max then return true end
   if P.FlipGain(P.Get(A.Base(key), "vendor"), unit) then return true end
-  if A.IsVariant(key) then return false end
-  local market = P.Get(key, "market")
-  return market and market > 0 and unit <= market * cfg.pct / 100 and Trusted(key) or false
+  if A.IsVariant(key) or not UnderMarket(key, unit, cfg.pct) then return false end
+  local price = Resale(key)
+  return price and unit <= price * cfg.pct / 100 or false
 end
 
 -- key: itemID or variant (A.Key); unit: buyout each -> nil, or { why = "watch" | "vendor" |
--- "market", profit (whole listing, after the AH cut), pct of market, market, big }
+-- "market", profit (whole listing, after the AH cut), pct of resale, resale, basis ("market" |
+-- "region sales"), big }. Resale only where trusted: an untrusted watch deal shows no profit.
 function Sn.Judge(key, unit, qty)
   if not (key and unit and unit > 0) then return nil end
   qty = qty or 1
   local cfg = Cfg()
   local base = A.Base(key)
-  local market = P.Get(key, "market")
-  local pct = market and market > 0 and unit / market * 100 or nil
-  local profit = market and (market * (1 - AH_CUT) - unit) * qty or 0
+  local max = cfg.watch[base]
+  local watched = max and unit <= max
   local flip = P.FlipGain(P.Get(base, "vendor"), unit)
+  local price, basis
+  if watched or flip or UnderMarket(key, unit, cfg.pct) then price, basis = Resale(key) end
+  local pct = price and unit / price * 100
+  local profit = price and (price * (1 - AH_CUT) - unit) * qty or 0
   if flip then profit = math.max(profit, flip * qty) end
   local why
-  local max = cfg.watch[base]
-  if max and unit <= max then
+  if watched then
     why = "watch"
   elseif flip and flip * qty >= cfg.profit then
     why = "vendor"
-  elseif pct and pct <= cfg.pct and profit >= cfg.profit and Trusted(key) then
+  elseif pct and pct <= cfg.pct and profit >= cfg.profit then
     why = "market"
   end
   if not why then return nil end
-  return { why = why, profit = math.floor(profit), pct = pct, market = market,
+  return { why = why, profit = math.floor(profit), pct = pct, resale = price, basis = basis,
     big = profit >= cfg.big }
 end
 
@@ -95,7 +104,7 @@ end
 local seen = {}       -- listing key -> time alarmed
 local lastSound, lastShot = 0, 0
 
-local WHY = { watch = "under your max", vendor = "under vendor", market = "under market" }
+local WHY = { watch = "under your max", vendor = "under vendor", market = "under resale" }
 
 local function Cached(key, link)
   local name, l = C_Item.GetItemInfo(link or A.Link(key))
@@ -185,6 +194,12 @@ local function Shoot(text, line)
   C_Timer.After(5, HideBanner)
 end
 
+local function Listing(item, g, pct)
+  local where = g.n > 1 and (" in %d listings from"):format(g.n) or " at"
+  return ("%s x%d%s %s%s%s"):format(item, g.qty, where, M.Money(g.unit),
+    g.qty > 1 and " each" or "", pct)
+end
+
 -- the alarms of a moment are told together, one line per item, the most profitable first;
 -- an item told already is told again only when it shows up cheaper
 local BATCH_WAIT = 1
@@ -197,12 +212,14 @@ local function Tell(groups, cfg)
   for i = SHOW + 1, #groups do moreProfit = moreProfit + groups[i].profit end
   for i = 1, math.min(#groups, SHOW) do
     local g = groups[i]
-    local pct = g.pct and (" (%d%% of market)"):format(g.pct + 0.5) or ""
-    local where = g.n > 1 and (" in %d listings from"):format(g.n) or " at"
-    local text = ("%s x%d%s %s each%s"):format(g.item, g.qty, where, M.Money(g.unit), pct)
+    local pct = g.pct and (" (%d%% of %s)"):format(g.pct + 0.5, g.basis or "market") or ""
+    local text = Listing(g.item, g, pct)
     local gain = g.profit > 0 and ("+%s profit"):format(M.Money(g.profit)) or WHY[g.why]
+    -- why it's a deal, unless the % or the gain already says it
+    local why = gain ~= WHY[g.why] and not (g.why == "market" and g.pct) and WHY[g.why]
+    local tail = why and g.from and (why .. "; " .. g.from) or why or g.from
     M.Print(Cc(g.big and "good" or "warn", g.big and "BIG DEAL" or "Deal") .. ": " .. text
-      .. ", " .. gain .. Cc("grey", ", " .. WHY[g.why] .. (g.from and ("; " .. g.from) or "")))
+      .. ", " .. gain .. (tail and Cc("grey", ", " .. tail) or ""))
     g.text, g.gain, g.pctText = text, gain, pct
   end
   if more > 0 then
@@ -218,10 +235,8 @@ local function Tell(groups, cfg)
   if cfg.remote and GetTime() - lastShot >= SHOT_GAP then
     lastShot = GetTime()
     local name = C_Item.GetItemNameByID(A.Base(best.key)) or best.item
-    local where = best.n > 1 and (" in %d listings from"):format(best.n) or " at"
-    local plain = ("%s x%d%s %s each%s"):format(name, best.qty, where, M.Money(best.unit),
-      best.pctText)
-    Shoot(plain, best.gain .. "  |cff999999(" .. WHY[best.why] .. ")|r")
+    Shoot(Listing(name, best, best.pctText),
+      best.gain .. "  |cff999999(" .. WHY[best.why] .. ")|r")
   end
 end
 
@@ -241,7 +256,9 @@ local function Flush()
     end
     g.n, g.qty, g.profit = g.n + 1, g.qty + (a.qty or 1), g.profit + a.deal.profit
     g.big = g.big or a.deal.big
-    if a.unit < g.unit then g.unit, g.pct, g.why = a.unit, a.deal.pct, a.deal.why end
+    if a.unit < g.unit then
+      g.unit, g.pct, g.basis, g.why = a.unit, a.deal.pct, a.deal.basis, a.deal.why
+    end
   end
   local fresh = {}
   for _, g in ipairs(groups) do
@@ -541,13 +558,14 @@ local function Filter(f, anchor)
         .. Cfg().wait .. " seconds", "Runs while this view is open; any other tab or view "
         .. "stops it. A full GetAll scan as well every 15 minutes." }
   end)
-  B.Help(pct, { "Under % of market", "A listing this far under market or lower is a deal, "
-    .. "when the profit is enough too", "Only where the market price is trusted (Conf not "
-    .. "Low). Watched items and listings under vendor price count whatever the %." })
+  B.Help(pct, { "Under % of resale", "A listing this far under its resale price or lower is "
+    .. "a deal, when the profit is enough too. Resale: market, or region sales where lower",
+    "Only where the market price is trusted. Watched items and listings under vendor price "
+    .. "count whatever the %." })
   B.Help(profit, { "Minimum profit", "Gold a deal must make on the whole listing, after the "
-    .. "5% AH cut, reselling at market (or vendoring)", "Big deals (" .. M.Money(Cfg().big)
-    .. "+, /meio snipe big) also show a raid warning, and with /meio snipe phone on are "
-    .. "sent to your phone." })
+    .. "5% AH cut, reselling at market or region sales, whichever is lower (or vendoring)",
+    "Big deals (" .. M.Money(Cfg().big) .. "+, /meio snipe big) also show a raid warning, "
+    .. "and with /meio snipe phone on are sent to your phone." })
   B.Help(alarm, { "Alarm", "Sound, taskbar flash and a chat line for each new deal",
     "Any search counts, in any AH window, and every GetAll scan. Hear it with the game in the "
     .. "background: Sound > Sound in background." })
@@ -571,10 +589,11 @@ B.VIEWS.snipe = {
     { key = "pct", title = "% Mkt", width = 56, right = true, tip = B.PCT_TIP, more = B.PCT_MORE,
       text = function(r) return B.Pct(r.pct) end },
     { key = "profit", title = "Profit", width = 96, right = true, desc = true,
-      tip = "What the whole auction makes, resold at market after the 5% cut, or vendored",
+      tip = "What the whole auction makes, resold at market or region sales (the lower) "
+        .. "after the 5% cut, or vendored",
       more = "Green: a big deal (/meio snipe big).", text = Profit },
     { key = "why", title = "Why", width = 60, tip = "Watch: under your max price (/meio snipe "
-      .. "add). Vendor: a vendor pays more. Market: far under market.",
+      .. "add). Vendor: a vendor pays more. Market: far under market and region sales.",
       text = function(r) return WHY_COL[r.why] or Cc("dim", "-") end },
     { key = "qty", title = "Qty", width = 40, right = true, tip = "How many in the auction",
       text = function(r) return r.qty end },
@@ -603,7 +622,7 @@ B.VIEWS.snipe = {
     local n = 0
     for _ in pairs(cfg.watch) do n = n + 1 end
     return Cc("accent", "Sniper") .. "\n\nStart sweeps the whole auction house again and again"
-      .. " and lists what's cheap enough to buy:\nunder " .. cfg.pct .. "% of market making "
+      .. " and lists what's cheap enough to buy:\nunder " .. cfg.pct .. "% of resale making "
       .. M.Money(cfg.profit) .. " or more, under vendor price, or under your max for a "
       .. "watched item (" .. n .. " watched).\nEach new deal sounds an alarm; double-click to "
       .. "buy.\n\n/meio snipe add <item> <max price> watches an item.  /meio snipe phone on: "
@@ -625,7 +644,7 @@ table.insert(B.onBuild, function(f)
   b:SetText("Sniper")
   b:SetScript("OnClick", Sn.Start)
   B.Help(b, { "Sniper", "Sweep the AH for deals over and over, with an alarm for each",
-    "Deals: under your % of market with enough profit, under vendor price, or under a watched "
+    "Deals: under your % of resale with enough profit, under vendor price, or under a watched "
       .. "item's max (/meio snipe add). Double-click a deal to buy it." })
   f.range:ClearAllPoints()
   f.range:SetPoint("RIGHT", b, "LEFT", -8, 0)
@@ -668,9 +687,9 @@ end
 
 local function Status()
   local cfg = Cfg()
-  M.Print(("sniper alarms %s: deals under %d%% of market making %s+, under vendor, or under "
-    .. "a watched item's max; big from %s; phone %s"):format(M.OnOff(cfg.alarms), cfg.pct,
-    M.Money(cfg.profit), M.Money(cfg.big), M.OnOff(cfg.remote)))
+  M.Print(("sniper alarms %s: deals under %d%% of resale (market or region sales) making "
+    .. "%s+, under vendor, or under a watched item's max; big from %s; phone %s"):format(
+    M.OnOff(cfg.alarms), cfg.pct, M.Money(cfg.profit), M.Money(cfg.big), M.OnOff(cfg.remote)))
   if GetCVar("Sound_EnableSoundWhenGameIsInBG") == "0" then
     M.Print(Cc("warn", "game sound is off in the background:") .. " alarms are silent while "
       .. "tabbed out (" .. M.Cmd("/meio snipe bgsound") .. " turns it on)")

@@ -359,7 +359,7 @@ end
 -- rows carry no auction IDs), so realm sales would need our own mail/sale tracking.
 -- Listings are this realm's: our last scan while fresh, or (without TSM) while newer than the
 -- app data (listed = quantity, from "scan", age), else TSM's auction count (listed = auctions,
--- from = P.Source()).
+-- from = P.Source()). t: when the count was taken, if known.
 -- clearDays: how long what's up now takes to sell at perDay, ignoring new posts.
 local LISTED_FRESH = 6 * 3600
 function P.SellRate(itemID)
@@ -375,10 +375,13 @@ function P.SellRate(itemID)
   if t and (now - t <= LISTED_FRESH or newest) then
     local up = own and own.t == t
     s.listed, s.auctions = up and own.qty or 0, up and own.n or 0
-    s.age, s.from = now - t, "scan"
+    s.age, s.from, s.t = now - t, "scan", t
   else
     local n = P.Get(itemID, "numAuctions")
-    if n then s.listed, s.auctions, s.from = n, n, P.Source() end
+    if n then
+      s.listed, s.auctions, s.from = n, n, P.Source()
+      s.t = AppTime(SOURCES.numAuctions[2])
+    end
   end
   if not (s.perDay or s.rate or s.listed) then return nil end
   if s.listed and s.perDay and s.perDay > 0 then s.clearDays = s.listed / s.perDay end
@@ -791,6 +794,20 @@ function P.Evidence(itemID)
     if v and v < (e.price or math.huge) then e.price = v end
   end
   return e
+end
+
+-- what a unit resells for before the cut, to bet on buying one: the lower of market and
+-- region sales (region market without sales data), and which it was, "market" | "region
+-- sales"; nil when the market isn't trusted. Unlike e.price, not the cheapest listing: that
+-- is the one being judged. Prices that disagree don't count against it, the lower is taken.
+function P.Resale(itemID)
+  local ev = P.Evidence(itemID)
+  if not (ev and ev.market and ev.market > 0 and (ev.level ~= "low" or ev.spreadOnly)) then
+    return nil
+  end
+  local region = ev.regionSale or ev.regionMarket
+  if region and region > 0 and region < ev.market then return region, "region sales", ev end
+  return ev.market, "market", ev
 end
 
 M.commands.sells = function(rest)

@@ -223,6 +223,8 @@ local HELP = {
     { "/meio craft price||speed", "craft intermediates when cheaper, or buy them ready-made" },
     { "/meio craft alts [on||off]", "count mats on other characters, or only this one's "
       .. "(pick alts in the Queue tab's menu)" },
+    { "/meio craft bank||mail||guild [on||off]", "count mats in your bank, mailbox or the guild "
+      .. "bank, or leave them out" },
     { "/meio craft next", "craft the next queued step (also a key binding)" },
     { "/meio craft one", "craft just 1 of the next queued step (also a key binding)" },
     { "/meio craft stop [skill||next]", "Craft next stops at that skill, or the next point; "

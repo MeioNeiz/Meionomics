@@ -1,5 +1,28 @@
 # Meionomics
 
+## 1.4.0
+
+- Invest (Flips tab): say how much gold you'd put in a day and see what to buy or craft for
+  the most back, beside what TSM's ledger says you made with your gold
+- Train queue recipes: a button under a trainer's window learns the recipes your queue
+  still needs that this trainer teaches, in queue order, as far as your gold goes
+- Bank, mailbox and guild bank mats each count or not for the queue and routes (Queue tab
+  menu, Settings, `/meio craft bank|mail|guild`)
+- The shopping list stops where the AH or your gold runs out, and says what is short
+- The shopping list buys a queued recipe's pattern when it's on the AH (or for less than
+  the trainer's fee); Craft next learns it from your bags when its turn comes
+- The queue no longer buys or makes again what earlier queued crafts make, buys a missing
+  tool when that is cheaper than making it, and crafts each step's materials just before it
+- Routes: mats you hold make a step cheaper ("own -X"), and your alts' professions and your
+  other one count too: mats another route needs say whose, so you can mail them
+- Use my mats first: your mats count at what they'd sell for, and it stops where the route
+  levels for less
+- Sniper bets on the lower of market and region sales, so a realm market far over what
+  sells no longer makes a big deal
+- Picking a row in the Meionomics tab opens its price history beside the AH
+- Patterns the game hadn't loaded yet show their names instead of "item 1234"
+- The AH tab's status line no longer runs under the buttons; hover a cut one to read it all
+
 ## 1.3.0
 
 - Flips (`/meio flips`): crafting chains that make money, using every character's recipes:

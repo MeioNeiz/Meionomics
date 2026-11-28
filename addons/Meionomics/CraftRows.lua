@@ -223,6 +223,21 @@ local function LearningRows(Add, x, e)
   WhereRows(Add, x)
 end
 
+-- a recipe not known here: learnable now and/or which alts know it (they craft it for you),
+-- else `none` (default dim "not known"). nil when known here
+function C.KnownState(rec, rank, none)
+  if R.KnownHere(rec) then return nil end
+  rank = rank or C.Rank(rec.prof or "")
+  local learn, _, _, grey, _, _, estLearn = C.Bands(rec)
+  local learnable = C.Learnable({ learn = learn, grey = grey, estLearn = estLearn }, rank)
+  local who = R.KnownBy(rec)
+  local names = #who > 2 and (who[1] .. ", " .. who[2] .. " +" .. (#who - 2))
+    or table.concat(who, ", ")
+  local state = Join(learnable and Hex(S("good"), "learnable now"),
+    #who > 0 and Dim("known by " .. names) or nil)
+  return state ~= "" and state or none or Dim("not known")
+end
+
 function C.RecipeRows(recipeID, opts)
   opts = opts or {}
   local rec = C.Recipe(recipeID)
@@ -241,7 +256,7 @@ function C.RecipeRows(recipeID, opts)
   end
 
   if not opts.noHead then
-    Add("head", "Recipe", x.known and Dim("known") or Dim("not known"))
+    Add("head", "Recipe", x.known and Dim("known") or C.KnownState(rec, rank))
   end
   local brief = opts.short and not opts.full
   if rec.out and brief and M.Action then

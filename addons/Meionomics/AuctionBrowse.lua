@@ -73,6 +73,51 @@ B.state = state
 B.VIEWS = {}
 B.onBuild = {}   -- fn(panel): later files' extra controls
 
+-- A full pattern scan brings hundreds of items the client has never cached, so no name yet:
+-- asked for, and the rows renamed (one redraw per burst) as the names arrive. An unanswered
+-- ask is repeated after ASK_AGAIN.
+local ASK_AGAIN = 10
+local asked, redraw = {}, false
+function B.Named(r)
+  if r.name then return r end
+  local id = r.itemID
+  r.name = C_Item.GetItemNameByID(id)
+  if r.name or not C_Item.RequestLoadItemDataByID then
+    r.name = r.name or ("item " .. id)
+    return r
+  end
+  if not asked[id] or GetTime() - asked[id] > ASK_AGAIN then
+    asked[id] = GetTime()
+    C_Item.RequestLoadItemDataByID(id)
+  end
+  -- a cached item answers at once
+  r.name = C_Item.GetItemNameByID(id)
+  if not r.name then r.name, r.unnamed = "item " .. id, true end
+  return r
+end
+
+local function Arrived(_, id)
+  if not asked[id] then return end
+  asked[id] = nil
+  local name, link, quality = C_Item.GetItemInfo(id)
+  name = name or C_Item.GetItemNameByID(id)
+  if not name then return end
+  for _, r in ipairs(state.rows) do
+    if r.unnamed and r.itemID == id then
+      r.name, r.unnamed, r.link = name, nil, r.link or link
+      r.quality = quality or r.quality
+    end
+  end
+  if redraw then return end
+  redraw = true
+  C_Timer.After(0.2, function()
+    redraw = false
+    B.Refresh()
+  end)
+end
+M.On("GET_ITEM_INFO_RECEIVED", Arrived)
+M.On("ITEM_DATA_LOAD_RESULT", Arrived)
+
 -- unit: buyoutAmount read as per item, as the workbench emulates it (unconfirmed in game).
 -- buyout: buyoutAmount as given, which is what Blizzard's Buy tab pays, whichever it is.
 -- ev: P.Evidence, once per item per search
@@ -95,14 +140,15 @@ function B.Row(key, r)
   local region = ev and (ev.regionSale or ev.regionMarket)
   local safe = ev and math.min(ev.market or math.huge, region or math.huge)
   if safe == math.huge then safe = nil end
-  return { key = key, itemID = id, link = r.itemLink, name = name or ("item " .. id),
+  return B.Named({ key = key, itemID = id, link = r.itemLink, name = name,
     quality = quality or 1, unit = unit, qty = r.quantity or 1,
     seller = seller .. (extra > 0 and (" +" .. extra) or ""), mine = mine, market = market,
     pct = (market and unit) and unit / market * 100 or nil,
     safe = safe, pctSafe = (safe and safe > 0 and unit) and unit / safe * 100 or nil,
     level = ev and ev.level, levelRank = ev and LEVEL[ev.level][1],
     sold = sells.perDay, rate = sells.rate, auctionID = r.auctionID, buyout = unit,
-    flip = not mine and P.FlipGain(P.Get(id, "vendor"), unit) or nil, commodity = r.commodity }
+    flip = not mine and P.FlipGain(P.Get(id, "vendor"), unit) or nil,
+    commodity = r.commodity })
 end
 
 function B.CanBuy(r) return r and r.auctionID and r.buyout and not r.mine and true or false end
@@ -605,6 +651,9 @@ function B.Draw()
   local first = #shown > 0 and state.offset + 1 or 0
   f.range:SetText(#shown > f.visible and ("%d-%d of %d"):format(first,
     math.min(state.offset + f.visible, #shown), #shown) or "")
+  -- later files put buttons left of the counter: stop the status short of both
+  local left, edge = f:GetLeft(), f.range:GetLeft()
+  if left and edge then f.status:SetWidth(math.max(40, edge - 8 - left - 6)) end
 end
 
 function B.SetView(name)
@@ -661,6 +710,10 @@ local function Row(f, i)
   row:SetScript("OnClick", function(self)
     state.selected = state.selected ~= self.data and self.data or nil
     B.Draw()
+    local r = state.selected
+    if r and M.History then
+      M.History.Pick(r.link or r.itemID or (r.key and r.key.itemID), AuctionHouseFrame)
+    end
   end)
   row:SetScript("OnDoubleClick", function(self)
     state.selected = self.data
@@ -865,6 +918,19 @@ function B.Build(ah)
 
   f.status = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   f.status:SetPoint("BOTTOMLEFT", 6, 4)
+  f.status:SetJustifyH("LEFT")
+  f.status:SetWordWrap(false)
+  local statusHit = CreateFrame("Frame", nil, f)
+  statusHit:SetAllPoints(f.status)
+  statusHit:EnableMouse(true)
+  statusHit:SetScript("OnEnter", function(self)
+    if f.status:GetUnboundedStringWidth() <= f.status:GetWidth() + 0.5 then return end
+    GameTooltip:SetOwner(self, "ANCHOR_TOP")
+    GameTooltip:SetText(f.status:GetText(), 1, 1, 1, 1, true)
+    GameTooltip:Show()
+  end)
+  statusHit:SetScript("OnLeave", GameTooltip_Hide)
+  f.statusHit = statusHit
   f.range = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   f.range:SetPoint("BOTTOMRIGHT", -6, 4)
   f:SetScript("OnShow", B.Draw)

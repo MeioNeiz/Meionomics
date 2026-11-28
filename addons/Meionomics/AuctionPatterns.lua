@@ -56,10 +56,10 @@ function B.PatternRow(br)
   local id = br.itemKey.itemID
   local name, link, quality = C_Item.GetItemInfo(id)
   local market = P.Get(id, "market")
-  local r = { key = br.itemKey, itemID = id, link = link, name = name or ("item " .. id),
+  local r = B.Named({ key = br.itemKey, itemID = id, link = link, name = name,
     quality = quality or 1, unit = br.minPrice, qty = br.totalQuantity or 1,
     mine = br.containsOwnerItem, market = market,
-    pct = (market and br.minPrice) and br.minPrice / market * 100 or nil }
+    pct = (market and br.minPrice) and br.minPrice / market * 100 or nil })
   local taught = R.TaughtBy(id)
   local rec = taught and taught[1]
   r.prof = rec and rec.prof
@@ -72,11 +72,12 @@ end
 local function Away(item, x, v, c, price, vendor, seen, est)
   local name, link, quality = C_Item.GetItemInfo(item)
   local market = P.Get(item, "market")
-  local r = { key = { itemID = item }, itemID = item, link = link,
-    name = name or C_Item.GetItemNameByID(item) or ("item " .. item), quality = quality or 1,
+  local r = { key = { itemID = item }, itemID = item, link = link, name = name,
+    quality = quality or 1,
     unit = price, qty = 0, market = market, prof = x.rec.prof, vendor = vendor,
     down = not vendor, faded = not vendor, lastT = seen and seen.t,
     est = est, pct = (market and price and not est) and price / market * 100 or nil }
+  B.Named(r)
   Fill(r, c, x, v)
   -- the glow says "buy it now": not for what isn't up
   if r.down then r.glow = nil end

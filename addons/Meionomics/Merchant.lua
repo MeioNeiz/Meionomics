@@ -67,7 +67,11 @@ function Mc.BuyList()
   if C.QueueCount() == 0 then return list, total end
   local stock = Stock()
   if not next(stock) then return list, total end
-  for _, m in ipairs(C.Shopping().mats) do
+  -- the AH short of a mat: the whole queue's, bought once while here. Gold short: only the
+  -- crafts it covers, else vendor mats take gold the AH mats were counted on
+  local shop = C.Shopping()
+  if shop.limit and shop.limit.why ~= "gold" then shop = shop.full end
+  for _, m in ipairs(shop.mats) do
     local s = stock[m.id]
     local want = s and m.buy - Pending(m.id) or 0
     if want > 0 then
@@ -167,7 +171,7 @@ end
 local function Queued()
   local q = {}
   if C.QueueCount() > 0 then
-    for _, m in ipairs(C.Shopping().mats) do q[m.id] = true end
+    for _, m in ipairs(C.Shopping(true).mats) do q[m.id] = true end
   end
   return q
 end

@@ -393,8 +393,8 @@ end
 ------------------------------------------------------------------------------ Live sightings
 -- Every AH search, whichever window made it (Blizzard's, TSM's, ours), goes in as what's up
 -- now, so prices follow what you browse. A search's variants (A.Key) each go in as well; a
--- browse row can't tell them apart. Forever lists everything as non-commodity items, so
--- commodity searches aren't read.
+-- browse row can't tell them apart. Stackable goods (cloth, herbs, ore) are commodities on
+-- Forever: their searches answer with COMMODITY_SEARCH_RESULTS_UPDATED.
 
 -- an item search's results as Aggregate's shape, only those of variant (A.Key) if given.
 -- buyoutAmount is per item (Blizzard puts it straight into the Sell tab's per-item price box).
@@ -425,6 +425,35 @@ function A.ItemSearch(key, variant)
   return a
 end
 
+-- a commodity search's results as Aggregate's shape. A row's own units (numOwnerItems) are
+-- ours, the rest a rival's at the same price.
+function A.CommoditySearch(itemID)
+  local CA = C_AuctionHouse
+  local a = { qty = 0, n = 0 }
+  local rows = {}
+  for i = 1, CA.GetNumCommoditySearchResults(itemID) do
+    local r = CA.GetCommoditySearchResultInfo(itemID, i)
+    local unit, qty = r and r.unitPrice, r and r.quantity or 0
+    if unit and unit > 0 and unit <= M.MAX_COPPER and qty > 0 then
+      local own = math.min(r.numOwnerItems or 0, qty)
+      local owner = type(r.owners) == "table" and r.owners[1] or nil
+      a.n, a.qty = a.n + 1, a.qty + qty
+      a.min = math.min(a.min or unit, unit)
+      if own > 0 then
+        rows[#rows + 1] = { unit, own, nil, true }
+        a.mine = math.min(a.mine or unit, unit)
+      end
+      if qty > own then
+        rows[#rows + 1] = { unit, qty - own, owner, false }
+        a.comp = math.min(a.comp or unit, unit)
+      end
+    end
+  end
+  table.sort(rows, function(x, y) return x[1] < y[1] end)
+  A.Depth(a, rows)
+  return a
+end
+
 local function Plain(key) return key and key.itemID and (key.itemSuffix or 0) == 0 end
 
 -- prices behind tooltips and the crafting panel changed: once per burst of results
@@ -435,7 +464,7 @@ local function Changed()
   C_Timer.After(0.5, function()
     pending = nil
     if M.Recipes then M.Recipes.ResetCache() end
-    if M.CraftUI then M.CraftUI.RefreshSoon() end
+    if M.CraftUI then M.CraftUI.PricesChanged() end
   end)
 end
 
@@ -463,6 +492,16 @@ local function OnItemSearch(_, key)
     A.Live(key.itemID, a, now)
   end
   for v in pairs(Variants(key)) do A.Live(v, A.ItemSearch(key, v), now) end
+  Changed()
+end
+
+local function OnCommoditySearch(_, itemID)
+  if not itemID then return end
+  local CA = C_AuctionHouse
+  local full = CA.HasFullCommoditySearchResults and CA.HasFullCommoditySearchResults(itemID)
+  local a = A.CommoditySearch(itemID)
+  if a.n == 0 and not full then return end
+  A.Live(itemID, a, M.Now())
   Changed()
 end
 
@@ -560,6 +599,7 @@ local function ReadReplicate()
     end
     lastRead.n, lastRead.t = total, M.Now()
     if M.History then M.History.Refresh() end
+    Changed()
   end
   Step()
 end
@@ -668,6 +708,7 @@ M.On("PLAYER_LOGIN", function()
     C_Timer.After(0.5, function() if t == ticket then MaybeRead() end end)
   end)
   pcall(M.On, "ITEM_SEARCH_RESULTS_UPDATED", OnItemSearch)
+  pcall(M.On, "COMMODITY_SEARCH_RESULTS_UPDATED", OnCommoditySearch)
   pcall(M.On, "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", OnBrowse)
   pcall(M.On, "AUCTION_HOUSE_BROWSE_RESULTS_ADDED", OnBrowse)
 end)

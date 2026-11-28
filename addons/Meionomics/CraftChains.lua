@@ -517,7 +517,8 @@ end
 -- slice a frame. opts.scope: "known" (default), "learnable" (adds what a character could
 -- learn now), "all" (every recipe there's a way to learn). opts.byProf: per profession, what
 -- learning its recipes would add -> job.list of Profession entries, best gain first; job.now
--- (a day's profit from known recipes), job.base (their flips).
+-- (a day's profit from known recipes), job.base (their flips); job.all (every recipe read).
+-- Ch.Run(job, opts, Yield): the same inside another job's coroutine.
 -- -> job: job.Step(ms) runs up to ms milliseconds, true when done; then job.list (flips,
 -- best per day first), job.stats; job.err on an error. job.done, job.total: progress
 local function Run(job, opts, Yield)
@@ -527,6 +528,7 @@ local function Run(job, opts, Yield)
   local scope = opts.byProf and "all" or opts.scope or (opts.learnable and "learnable")
     or "known"
   local all = AllRecipes(Yield)
+  job.all = all
   local known, wants = Avail(all, skills, scope, Yield)
   local stats = { recipes = #all, known = #known, learnable = #wants,
     enchanter = ctx.enchanter, scope = scope }
@@ -558,6 +560,8 @@ local function Run(job, opts, Yield)
   end)
   job.list, job.stats = out, stats
 end
+
+Ch.Run = Run
 
 function Ch.Start(opts)
   local job, deadline = { done = 0, total = 0 }, math.huge

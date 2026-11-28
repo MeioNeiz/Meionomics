@@ -18,6 +18,7 @@
 --   Shop for (same menu, /meio craft price|speed): Cheapest crafts intermediates when cheaper,
 --   Fastest buys them ready-made. Mats on other characters (same menu, /meio craft alts):
 --   counted or not, each alt can be left out (C.UsesAlt); routes and verdicts follow it too.
+--   Bank, mailbox and guild bank each count or not (C.UsesFrom, /meio craft bank|mail|guild).
 -- "~" marks estimates: trainer requirements not seen yet, learning cost spread over points.
 -- Look: Blizzard templates only (ButtonFrameTemplate, bottom tabs, column headers, dropdowns,
 -- MinimalScrollBar), so it sits beside ProfessionsFrame as part of it.
@@ -75,7 +76,28 @@ local function ProfitAged(p, e)
   return Profit(p)
 end
 local function Plural(n, word) return ("%d %s%s"):format(n, word, n == 1 and "" or "s") end
-local function ItemName(id) return C_Item.GetItemNameByID(id) or ("item:" .. id) end
+-- an item the client hasn't cached yet: asked for, the panel redrawn when it arrives
+local naming = {}
+local function ItemName(id)
+  local name = C_Item.GetItemNameByID(id)
+  if name then return name end
+  if C_Item.RequestLoadItemDataByID and not naming[id] then
+    naming[id] = true
+    C_Item.RequestLoadItemDataByID(id)
+  end
+  return "item:" .. id
+end
+-- why C.Shopping's list stops short of the queue
+local function LimitWhy(lim)
+  return lim.why == "gold" and "not enough gold for more"
+    or lim.id and ("not enough %s on the AH"):format(ItemName(lim.id)) or "AH or gold"
+end
+M.On("GET_ITEM_INFO_RECEIVED", function(_, id)
+  if naming[id] then
+    naming[id] = nil
+    UI.RefreshSoon()
+  end
+end)
 local function Pair(tt, left, right)
   tt:AddDoubleLine(left, right, LABEL[1], LABEL[2], LABEL[3], VALUE[1], VALUE[2], VALUE[3])
 end
@@ -645,6 +667,7 @@ local function MaterialTip(m)
     if m.buy > 0 then
       Pair(tt, Hex(BAD, "Buy"), m.buy .. "  " .. Money(m.price and m.price * m.buy))
     end
+    if m.trainer and m.buy > 0 then Pair(tt, "Trainer instead", Money(m.trainer)) end
   end
 end
 
@@ -660,8 +683,17 @@ local function PointsPM(p, var)
   return "+" .. Points(p) .. (sd >= 1 and (" ±" .. sd) or "")
 end
 
+-- what learning an unlearnt queued recipe takes, in a word or two
+local function Unlearnt(rec)
+  local item = select(6, C.Bands(rec))
+  local cost, from = C.LearnCost(rec, item)
+  if from == "held" then return Hex(ACCENT, "learn pattern") end
+  if from == "pattern" then return Hex(BAD, "buy pattern") end
+  return Hex(BAD, "train") .. (cost and cost > 0 and " " .. Money(cost) or "")
+end
+
 local function StepState(s)
-  if not s.known then return Hex(BAD, "not known") end
+  if not s.known then return Unlearnt(s.rec) end
   if s.can == 0 and s.missing[1] then
     return Hex(BAD, "needs " .. ItemName(s.missing[1][1]))
   end
@@ -687,7 +719,8 @@ local function StepTip(s)
     end
     if s.stop then
       tt:AddLine(Hex(DIM, ("Queued for %s %d: Craft next stops there and takes the rest off"
-        .. " the queue"):format(s.rec.prof, s.stop)), nil, nil, nil, true)
+        .. " the queue, or keeps what your materials make if it sells at a profit")
+        :format(s.rec.prof, s.stop)), nil, nil, nil, true)
     end
     if s.tool then
       tt:AddLine(Hex(ACCENT, ("Added: queued enchants need a %s and you hold none"):format(s.tool)),
@@ -761,14 +794,19 @@ VIEWS.queue = {
       Note(Hex(DIM, "Skill-up > Route: Queue route adds a whole skill-up run"))
       Note(Hex(DIM, "Then Craft next (top right, or its key binding) makes them in order"))
     end
-    if #shop.mats > 0 then
+    if #shop.mats > 0 or shop.limit then
       local total = Money(shop.buyCost) .. (shop.complete and "" or " +?")
       Head("Shopping list", Hex(ACCENT, total))
+      local lim = shop.limit
+      if lim then
+        out[#out + 1] = { note = true, name = Hex(ACCENT, ("For %d of %d crafts"):format(
+          lim.crafts, lim.of)) .. Hex(DIM, ": " .. LimitWhy(lim)) }
+      end
       local function N(v, c) return v > 0 and Hex(c, v) or Hex(DIM, "-") end
       for _, m in ipairs(shop.mats) do
         out[#out + 1] = { icon = C_Item.GetItemIconByID(m.id), name = ItemName(m.id),
           cells = { m.need, N(m.bags, "ffffff"), N(m.bank + m.mail, BANK), N(m.alts, ALT),
-            Fetch(m) },
+            Fetch(m) .. (m.trainer and m.buy > 0 and Hex(DIM, " vs ") .. Money(m.trainer) or "") },
           tip = MaterialTip(m) }
       end
     end
@@ -789,10 +827,13 @@ local FIND_GROUP_SHORT = { known = "Known", now = "Now", later = "Later", none =
 local WITHINS = { 10, 25, 50, 0 }   -- 0: any distance
 local FIND_DEFAULT = { mode = "profit", prof = "all", within = 25,
   show = { known = true, now = true, later = true, none = false } }
+-- bumped by UI.PricesChanged: Find and Flips lists built on older prices are rebuilt (a build
+-- running meanwhile is stamped with the generation it started on, so it doesn't count fresh)
+local priceGen = 0
 local SourceText, FindStatus   -- used by Route and the footer
 do
 local FIND_KEEP, FIND_SLICE_MS, FIND_SLICE_MAX = 120, 4, 20
-local finds, finding = {}, {}   -- prof -> { rank, at, list }; prof -> { done, total }
+local finds, finding = {}, {}   -- prof -> { rank, at, list, gen }; prof -> { done, total }
 
 local SRC_ICON = { ah = "Interface\\Icons\\INV_Misc_Coin_01",
   vendor = "Interface\\GossipFrame\\VendorGossipIcon",
@@ -879,6 +920,7 @@ local function BuildFind(prof)
   local who = R.Viewer()
   local prog = { done = 0, total = #recs }
   finding[prof] = prog
+  local gen = priceGen
   R.ResetCache()
   local list, pool, i, j, ctxP, ctxS = {}, {}, 0, 0, nil, nil
   local function Add(rec)
@@ -920,7 +962,7 @@ local function BuildFind(prof)
       return C_Timer.After(0, Step)
     end
     finding[prof] = nil
-    finds[prof] = { rank = rank, at = GetTime(), list = list, who = who }
+    finds[prof] = { rank = rank, at = GetTime(), list = list, who = who, gen = gen }
     UI.RefreshSoon()
   end
   Step()
@@ -934,7 +976,7 @@ end)
 local function FindData(prof)
   local f = finds[prof]
   local fresh = f and f.who == R.Viewer() and f.rank == C.Rank(prof)
-    and GetTime() - f.at < FIND_KEEP
+    and GetTime() - f.at < FIND_KEEP and f.gen == priceGen
   -- one profession at a time: the next starts on the refresh after one finishes
   if not fresh and not next(finding) then BuildFind(prof) end
   return f
@@ -1124,6 +1166,24 @@ local function Planned(j)
   if j.run.err then geterrorhandler()(j.run.err) end
 end
 
+-- held mats the account's other routes need (C.Route.Reserved), planned after his own
+local function Others(prof)
+  return C.Route.Reserved(R.Viewer() or R.Me(), prof)
+end
+local othersRun
+local function OthersRun()
+  if job then return C_Timer.After(0.25, OthersRun) end
+  local was = C.Route.OthersVersion()
+  if not C.Route.OthersStep() then return C_Timer.After(0, OthersRun) end
+  othersRun = nil
+  if C.Route.OthersVersion() ~= was then UI.RefreshSoon() end
+end
+local function OthersStart()
+  if othersRun or C.Route.OthersReady() then return end
+  othersRun = true
+  C_Timer.After(0, OthersRun)
+end
+
 local function Slice(j)
   if job ~= j then return end
   if not j.run.Step() then return C_Timer.After(0, function() Slice(j) end) end
@@ -1137,17 +1197,22 @@ end
 local function RoutePlan(prof, rank, to, pick)
   local r = state.route
   local max = whatIf and select(2, RankOf(prof))
-  local key = table.concat({ prof, rank, to, tostring(r.resale), tostring(r.confirmedOnly),
+  local base = table.concat({ prof, rank, to, tostring(r.resale), tostring(r.confirmedOnly),
     pick and ("%d@%d-%d"):format(pick.id, pick.from, pick.to) or "", tostring(max) }, ":")
+  local key = base .. ":" .. C.Route.OthersVersion()
   local now = GetTime()
   local c = routes[key]
   if c and now - c.at < ROUTE_KEEP then return c.plan end
   for k, old in pairs(routes) do
     if now - old.at >= ROUTE_KEEP then routes[k] = nil end
   end
-  if job and job.key == key then return nil, true end
+  -- the other routes' pass landed: the plan without it stays up while this one is made
+  local prev = routes[base .. ":" .. (C.Route.OthersVersion() - 1)]
+  prev = prev and prev.plan
+  if job and job.key == key then return prev, not prev end
   local j = { key = key, run = C.Route.Start(prof, rank, to,
-    { resale = r.resale, unverified = not r.confirmedOnly, pin = pick, max = max }) }
+    { resale = r.resale, unverified = not r.confirmedOnly, pin = pick, max = max,
+      others = Others(prof) }) }
   -- a small one is done in its first slice: no "planning" flash
   if j.run.Step() then
     Planned(j)
@@ -1155,20 +1220,22 @@ local function RoutePlan(prof, rank, to, pick)
   end
   job = j
   C_Timer.After(0, function() Slice(j) end)
-  return nil, true
+  return prev, not prev
 end
 
--- My mats: kept like routes, under its own key
-local function HeldPlan(prof, rank, to)
+-- My mats: kept like routes, under its own key. against: the route from rank, whose cost a
+-- point the held crafts must beat (false: none)
+local function HeldPlan(prof, rank, to, against)
   local r = state.route
   local max = whatIf and select(2, RankOf(prof))
-  local key = table.concat({ "held", prof, rank, to, tostring(r.confirmedOnly), tostring(max) },
-    ":")
+  local key = table.concat({ "held", prof, rank, to, tostring(r.confirmedOnly), tostring(max),
+    C.Route.OthersVersion() }, ":")
   local now = GetTime()
   local c = routes[key]
   if c and now - c.at < ROUTE_KEEP then return c.plan end
   c = { at = now, plan = C.Route.FromHeld(prof, rank,
-    { unverified = not r.confirmedOnly, max = max, to = to }) }
+    { unverified = not r.confirmedOnly, max = max, to = to, against = against,
+      others = Others(prof) }) }
   routes[key] = c
   return c.plan
 end
@@ -1207,7 +1274,7 @@ end
 
 -- cheapest: the route without the pick, when there is one
 local function RouteSummary(plan, cheapest)
-  local free = plan.held and plan.gross <= 0
+  local free = plan.held and plan.buy + plan.learn <= 0
   local text = ("%s · %s%s crafts%s · %s"):format(Plural(#plan.steps, "step"),
     plan.held and "" or "~", M.Count(plan.crafts),
     plan.learn > 0 and (" · learn " .. M.Money(plan.learn)) or "",
@@ -1217,7 +1284,7 @@ local function RouteSummary(plan, cheapest)
     .. (plan.reach > plan.from and Hex(DIM, " (" .. EarnsPer(plan.net, plan.reach - plan.from)
       .. " a point)") or ""))
   local more = cheapest and plan.net - cheapest.net
-  if plan.heldFree or plan.held then
+  if plan.heldFree then
     text = text .. Hex(DIM, " · your mats free")
   elseif plan.heldValue > 0 then
     text = text .. Hex(DIM, " · your mats at sale price")
@@ -1234,7 +1301,7 @@ local function RouteSummary(plan, cheapest)
       tt:AddLine(plan.held and ("Your mats: %d to %d"):format(plan.from, plan.reach)
         or ("Route %d to %d"):format(plan.from, plan.reach))
       Pair(tt, "Materials to buy", Money(plan.buy) .. (plan.complete and "" or " +?"))
-      if plan.heldFree or plan.held then
+      if plan.heldFree then
         Pair(tt, "Materials you hold", Hex(GOOD, "free, used first"))
       elseif plan.heldValue > 0 then
         Pair(tt, "Materials you hold (what they'd sell for)", Money(plan.heldValue))
@@ -1259,8 +1326,9 @@ local function RouteSummary(plan, cheapest)
         tt:AddLine(Hex(DIM, "Click here, or Shift-click a step: back to the cheapest"), nil,
           nil, nil, true)
       elseif plan.held then
-        tt:AddLine(Hex(DIM, "One craft at a time, the most points for what it uses; scarce mats"
-          .. " rationed. Queue route queues it all"), nil, nil, nil, true)
+        tt:AddLine(Hex(DIM, "One craft at a time, the cheapest point: your mats at what they'd"
+          .. " sell for, your time counted. Stops where the route levels for less. Queue route"
+          .. " queues it all"), nil, nil, nil, true)
       else
         tt:AddLine(Hex(DIM, "Shift-click a step: other recipes for it"), nil, nil, nil, true)
       end
@@ -1322,15 +1390,30 @@ local function AltVersus(a)
     n == 1 and "" or "s")
 end
 
+-- "65-80"; a tool made on the way, no skill of its own: "at 65"
+local function Span(st)
+  if st.from == st.to then return ("at %d"):format(st.from) end
+  return ("%d-%d"):format(st.from, st.to)
+end
+
+-- a route step's or alternative's held mats ({ own, saved }), when they make it cheaper
+local function OwnMats(tt, t)
+  if (t.saved or 0) < 1 then return end
+  Pair(tt, "  yours, at their sale value", Money(t.own))
+  tt:AddLine(Hex(DIM, ("Mats you hold count at what they'd sell for after the 5%% AH cut: %s"
+    .. " less than buying them"):format(M.Money(t.saved))), nil, nil, nil, true)
+end
+
 local function RouteStepTip(st, plan)
   local tip = RecipeTip(st.x)
   return function(tt)
     tip(tt)
     tt:AddLine(" ")
     local text, n = Crafts(st)
-    tt:AddLine(Hex(ACCENT, ("Route %d-%d"):format(st.from, st.to)))
+    tt:AddLine(Hex(ACCENT, "Route " .. Span(st)))
     Pair(tt, "Crafts", st.sd >= 0.5 and ("%s (give or take %d)"):format(text, st.sd + 0.5) or n)
     Pair(tt, "Materials", Money(st.mats))
+    OwnMats(tt, st)
     if st.learnt then
       Pair(tt, "Learning", Hex(DIM, ("paid at %d"):format(st.learnt)))
     elseif st.fee > 0 then
@@ -1431,15 +1514,20 @@ local function AltRow(a, st, plan)
   local c = a.c
   local n = math.ceil(a.n - 1e-6)
   -- learnt by another step: Alternatives charges no fee for it either
-  local learn = LearnCell(c)
+  local learn, inRoute = LearnCell(c), nil
   for _, o in ipairs(plan.steps) do
     if o ~= st and o.c == c and c.how ~= "known" then
-      learn = Hex(DIM, "at " .. (o.learnt or o.from))
+      inRoute = o.learnt or o.from
+      learn = Hex(DIM, "in route")
       break
     end
   end
   -- the whole stretch with it, in the step's own terms (the rest at the step's rate)
-  return { oneLine = true, dim = true, icon = c.rec.icon, name = c.rec.name or tostring(c.rec.id),
+  local saved = (a.saved or 0) >= 1 and a.saved
+  local name = c.rec.name or tostring(c.rec.id)
+  -- short: the name column is narrow, the hover has the rest
+  if saved then name = name .. Hex(GOOD, " own -" .. M.Money(saved)) end
+  return { oneLine = true, dim = true, icon = c.rec.icon, name = name,
     recID = c.rec.id,
     cells = { Hex(DIFF[ColourAt(c, a.from)], ("%d-%d"):format(a.from, a.to)), "~" .. n,
       learn, EarnsPer(st.net + a.delta, st.to - st.from), Earns(st.net + a.delta) },
@@ -1450,9 +1538,19 @@ local function AltRow(a, st, plan)
       tt:AddLine(Hex(ACCENT, ("Instead of %s, %d-%d"):format(st.c.rec.name or st.c.rec.id,
         st.from, st.to)))
       Pair(tt, AltName(a), AltVersus(a))
+      OwnMats(tt, a)
+      if inRoute then
+        tt:AddLine(Hex(DIM, ("The route learns it anyway (its %d step), so no fee here"):format(
+          inRoute)), nil, nil, nil, true)
+      end
+      local own = st.c.rec.name or "the step's recipe"
+      if a.from > st.from then
+        tt:AddLine(Hex(DIM, ("Learnt at %d: %s until then"):format(a.from, own)), nil, nil, nil,
+          true)
+      end
       if a.to < st.to then
-        tt:AddLine(Hex(DIM, ("Goes green at %d: %s does the rest"):format(a.to,
-          st.c.rec.name or "the step's recipe")), nil, nil, nil, true)
+        tt:AddLine(Hex(DIM, ("Goes green at %d: %s does the rest"):format(a.to, own)), nil, nil,
+          nil, true)
       end
       tt:AddLine(Hex(DIM, "Click to use it; the rest of the route is planned again"), nil, nil,
         nil, true)
@@ -1500,10 +1598,19 @@ local function StepRow(st, plan)
     local src = c.src and c.src.how == "unknown" and Hex(DIM, "pattern: " .. c.src.text)
     st.src = st.learnt and Hex(DIM, ("learnt at %d"):format(st.learnt))
       or src or SourceText(st.x)
+    -- the recipe item beats the trainer: what the trainer would have cost
+    if c.trainFee and not st.learnt then
+      st.src = (st.src and st.src .. Hex(DIM, " · ") or "") .. Hex(DIM, "trainer ")
+        .. Money(c.trainFee)
+    end
   end
   local x = st.x
   local sells = plan.resale and c.rec.out and Sells(plan.outputs[c.rec.out])
   local sub = st.src and sells and (st.src .. Hex(DIM, " · ") .. sells) or st.src or sells
+  if (st.saved or 0) >= 1 then
+    local own = Hex(GOOD, "own mats -" .. M.Money(st.saved))
+    sub = sub and (sub .. Hex(DIM, " · ") .. own) or own
+  end
   if st.tool then
     sub = Hex(ACCENT, ("%s: the steps after it need one"):format(st.tool))
   end
@@ -1512,7 +1619,7 @@ local function StepRow(st, plan)
     sub = Hex(ACCENT, "your pick") .. (sub and (Hex(DIM, " · ") .. sub) or "")
   end
   return { icon = c.rec.icon, name = RecipeName(x), sub = sub or nil, x = x, recID = c.rec.id,
-    cells = { Hex(x.colour and DIFF[x.colour] or "ffffff", ("%d-%d"):format(st.from, st.to)),
+    cells = { Hex(x.colour and DIFF[x.colour] or "ffffff", Span(st)),
       (Crafts(st)), LearnCell(c, st), EarnsPer(st.net, st.to - st.from), Earns(st.net) },
     tip = RouteStepTip(st, plan), click = StepClick(st, plan) }
 end
@@ -1562,6 +1669,75 @@ local function MatRow(m)
     tip = RouteMatTip(m) }
 end
 
+-- "Dark's Blacksmithing 6-75", "your First Aid 56-75"
+local function OtherRoute(r)
+  local who = r.key == (R.Viewer() or R.Me()) and "your" or (r.name .. "'s")
+  return ("%s %s %d-%d"):format(who, r.prof, r.from, r.to)
+end
+
+-- mats this character holds that another route needs: mail them to that alt, or keep them
+-- for his other profession, rather than selling them or burning them here
+local OTHER_ROWS = 8
+local function OtherMatRows(out, prof)
+  local res = Others(prof)
+  if not res then return end
+  local me, rows = R.Viewer() or R.Me(), {}
+  for id, r in pairs(res) do
+    local h = C.Have(id)
+    local mine = h.bags + h.bank + h.mail
+    local n = math.min(mine, math.ceil(r.n - 1e-6))
+    if n >= 1 then
+      local alts = {}
+      for _, u in ipairs(r.uses) do
+        if u.route.key ~= me then alts[u.route.name] = true end
+      end
+      local names = {}
+      for name in pairs(alts) do names[#names + 1] = name end
+      table.sort(names)
+      rows[#rows + 1] = { id = id, r = r, n = n, mine = mine, names = names,
+        value = n * (R.MatPrice(id) or 0) }
+    end
+  end
+  if #rows == 0 then return end
+  table.sort(rows, function(a, b)
+    if a.value ~= b.value then return a.value > b.value end
+    return a.id < b.id
+  end)
+  local total = 0
+  for _, row in ipairs(rows) do total = total + row.value end
+  out[#out + 1] = { head = true, allCells = true, name = "Your mats other routes need",
+    cells = { "", Hex(DIM, "need"), Hex(DIM, "have"), "", Hex(GOOD, M.Money(total)) },
+    tip = function(tt)
+      tt:AddLine("Your mats other routes need")
+      tt:AddLine(Hex(DIM, "Your alts' professions and your others, each to its cap. Mail"
+        .. " them or keep them: those routes would buy them otherwise. This route counts them"
+        .. " at what buying costs, not what they'd sell for"), nil, nil, nil, true)
+    end }
+  for i = 1, math.min(#rows, OTHER_ROWS) do
+    local row = rows[i]
+    local to = #row.names > 0 and Hex(ACCENT, row.names[1] .. (#row.names > 1 and " +" or ""))
+      or Hex(DIM, "keep")
+    out[#out + 1] = { oneLine = true, icon = C_Item.GetItemIconByID(row.id),
+      name = ItemName(row.id),
+      cells = { "", math.ceil(row.r.n - 1e-6), row.mine, to, Money(row.value) },
+      tip = function(tt)
+        tt:SetItemByID(row.id)
+        tt:AddLine(" ")
+        for _, u in ipairs(row.r.uses) do
+          Pair(tt, OtherRoute(u.route), M.Count(math.ceil(u.n - 1e-6)))
+        end
+        Pair(tt, "You hold (bags, bank, mail)", M.Count(row.mine))
+        Pair(tt, "Saves buying", Hex(GOOD, M.Money(row.value)))
+        if #row.names > 0 then
+          tt:AddLine(Hex(DIM, "Mail them to " .. table.concat(row.names, ", ")), nil, nil, nil,
+            true)
+        else
+          tt:AddLine(Hex(DIM, "Keep them for your other profession"), nil, nil, nil, true)
+        end
+      end }
+  end
+end
+
 VIEWS.route = {
   title = "Skill-up",
   rowH = 32,
@@ -1592,8 +1768,16 @@ VIEWS.route = {
       Note(Hex(DIM, ("Nothing to plan: %d is as far as it goes"):format(rank)))
       return out
     end
-    -- what held mats level first, then the route on from there
-    local held = state.route.useHeld and HeldPlan(prof, rank, to)
+    -- what held mats level first (while cheaper than the route), then the route on from there
+    local held
+    if state.route.useHeld then
+      local base, planning = RoutePlan(prof, rank, to)
+      if planning then
+        Note(Hex(DIM, ("Planning the route to %d..."):format(to)))
+        return out
+      end
+      held = HeldPlan(prof, rank, to, base or false)
+    end
     if held and #held.steps > 0 then
       out.heldPlan = held
       out[#out + 1] = { head = true, allCells = true, name = "With your mats",
@@ -1616,6 +1800,9 @@ VIEWS.route = {
       if rank >= to then return out end
       out[#out + 1] = { head = true, allCells = true,
         name = ("Then %d to %d"):format(rank, to), cells = { "", "", "", "", "" } }
+    end
+    if held and #held.steps == 0 then
+      Note(Hex(DIM, "Your mats: no craft from them levels for less than this route"))
     end
     local pick = RoutePick(prof, rank, to)
     local plan, planning = RoutePlan(prof, rank, to, pick)
@@ -1657,6 +1844,8 @@ VIEWS.route = {
           Hex(ACCENT, M.Money(plan.buy) .. (plan.complete and "" or " +?")) } }
       for _, m in ipairs(plan.mats) do out[#out + 1] = MatRow(m) end
     end
+    OthersStart()
+    OtherMatRows(out, prof)
     return out
   end,
 }
@@ -1718,7 +1907,8 @@ local PROF_COLUMNS = {
 
 local function Key()
   local s = state.flips
-  return s.view == "profs" and "profs" or s.scope
+  if s.view == "profs" or s.view == "invest" then return s.view end
+  return s.scope
 end
 
 local function FlipsStatus()
@@ -1730,13 +1920,16 @@ end
 
 local function FlipsData()
   local fresh = flips and flips.key == Key() and GetTime() - flips.at < FLIPS_KEEP
+    and flips.gen == priceGen
   if fresh or job then return flips end
-  local key = Key()
-  job = C.Chains.Start({ scope = state.flips.scope, byProf = key == "profs" })
+  local key, gen = Key(), priceGen
+  job = key == "invest" and M.Invest.Start()
+    or C.Chains.Start({ scope = state.flips.scope, byProf = key == "profs" })
   local function Step()
     if job.Step(FLIPS_SLICE_MS) then
       -- an error keeps an empty list until FLIPS_KEEP passes: no rebuild on every refresh
-      flips = { at = GetTime(), list = job.list or {}, key = key, now = job.now }
+      flips = { at = GetTime(), list = job.list or {}, key = key, now = job.now,
+        pool = job.pool, gen = gen }
       job = nil
       return UI.RefreshSoon()
     end
@@ -2019,6 +2212,233 @@ local function ProfRow(p, now)
     end }
 end
 
+
+-- Invest (Invest.lua): a pot of gold put where each gold returns most a day, against what
+-- TSM's ledger says the account made with its gold. state.flips.gold: the pot in gold, nil
+-- for what this character has
+local INVEST_COLUMNS = {
+  { "Plan", 156, "name", name = true, tip = "What to buy or craft a day, best first",
+    more = "Craft flips with recipes your characters know, AH listings under what they resell "
+      .. "for, listings under what a vendor pays" },
+  { "A day", 40, "n", tip = "Crafts a day, or units to buy" },
+  { "Gold in", 58, "cost", tip = "Gold it takes: materials or listings, deeper listings "
+    .. "costing more" },
+  { "Back", 58, "back", tip = "Gold back as it sells: after the AH cut, or a vendor" },
+  { "Profit", 56, "profit", tip = "Back less gold in" },
+  { "Return", 42, "ret", tip = "Profit per gold put in" } }
+local WHY = { cap = "what sells here a day", books = "what's listed",
+  dear = "dearer listings: the next one wouldn't pay", time = "the hour of crafting",
+  gold = "the gold" }
+local KIND = { craft = "Craft and sell", resale = "Buy on the AH, sell again higher",
+  vendor = "Buy on the AH, sell to a vendor" }
+local plans   -- { pool, gold, plan, curve, ledger, mirror (the plan for the ledger's pot) }
+
+local function Pct(r)
+  if not r then return Hex(DIM, "-") end
+  return ("%d%%"):format(math.floor(r * 100 + 0.5))
+end
+
+local function Pot()
+  local g = state.flips.gold
+  if g and g > 0 then return g * 10000 end
+  return math.max(GetMoney(), 10000)
+end
+
+local function Plans(pool)
+  local gold = Pot()
+  if plans and plans.pool == pool and plans.gold == gold then return plans end
+  local I = M.Invest
+  plans = { pool = pool, gold = gold, plan = I.Plan(pool, gold), curve = I.Curve(pool, gold),
+    ledger = I.Ledger(pool) }
+  local l = plans.ledger
+  if l and l.days > 0 and l.spent > 0 then plans.mirror = I.Plan(pool, l.spent / l.days) end
+  return plans
+end
+
+local function Listings(pool, o, tt)
+  local book = pool.books[o.id] or {}
+  local shown = 0
+  for _, r in ipairs(book) do
+    if r[1] > o.maxEach or shown >= 5 then break end
+    shown = shown + 1
+    local qty = r[2] == math.huge and "many" or Qty(r[2])
+    Pair(tt, ("  %s at"):format(qty), Money(r[1]))
+  end
+end
+
+local function InvestTip(pool, row)
+  return function(tt)
+    local o = row.o
+    tt:AddLine(ItemName(o.id))
+    tt:AddLine(KIND[o.kind], 0.7, 0.7, 0.7)
+    tt:AddLine(" ")
+    Pair(tt, o.kind == "craft" and "Crafts a day" or "Buy", Qty(row.n))
+    Pair(tt, "Gold in", Money(row.cost))
+    Pair(tt, "Back", Money(row.back))
+    Pair(tt, "Profit", Profit(row.profit) .. Hex(DIM, " " .. Pct(row.profit / row.cost)))
+    Pair(tt, "Time", Secs(row.secs))
+    local why = WHY[row.why] or WHY.gold
+    if row.why == "cap" and o.f and o.f.cooldown and o.cap >= o.f.cooldown - 1e-6 then
+      why = "the cooldowns"
+    end
+    tt:AddLine(Hex(DIM, "  limited by " .. why))
+    if o.level and o.level ~= "high" then
+      tt:AddLine(Hex(o.level == "low" and BAD or DIM, "  AH price confidence: " .. o.level))
+    end
+    if o.kind == "craft" then
+      tt:AddLine(" ")
+      tt:AddLine("The flip on its own (Flips view)", LABEL[1], LABEL[2], LABEL[3])
+      FlipTip(o.f)(tt)
+      return
+    end
+    tt:AddLine(" ")
+    tt:AddLine(("Listings under %s"):format(M.Money(o.maxEach)), LABEL[1], LABEL[2], LABEL[3])
+    Listings(pool, o, tt)
+    Pair(tt, o.kind == "vendor" and "A vendor pays" or "Sells again for", Money(o.value))
+    local a = M.Auction.Get(o.id)
+    if a and a.t then tt:AddLine(Hex(DIM, "  seen " .. C.Ago(M.Now() - a.t))) end
+    tt:AddLine(" ")
+    tt:AddLine(Hex(DIM, "Buy them in the AH tab: search for it, or the Sniper"))
+  end
+end
+
+local function InvestRow(pool, row)
+  local o, f = row.o, row.o.f
+  local name = ItemName(o.id)
+  local sub = f and FlipSub(f)
+    or Hex(DIM, ("%s under %s"):format(o.kind == "vendor" and "Vendor flip: buy" or "Resell: buy",
+      M.Money(o.maxEach)))
+  local ret = row.cost > 0 and row.profit / row.cost or nil
+  return { icon = f and f.rec.icon or C_Item.GetItemIconByID(o.id), name = name, sub = sub,
+    f = f, inv = row,
+    sort = { name = name, n = row.n, cost = row.cost, back = row.back, profit = row.profit,
+      ret = ret or 0 },
+    cells = { Qty(row.n), Money(row.cost), Money(row.back), Profit(row.profit), Pct(ret) },
+    tip = InvestTip(pool, row),
+    click = f and FlipClick(f) or function()
+      UI.Say(Hex(DIM, "Buy it in the AH tab: search for it, or the Sniper"))
+    end }
+end
+
+local function PlanTip(p)
+  return function(tt)
+    local plan, gold = p.plan, p.gold
+    tt:AddLine(("%s a day, put to work"):format(M.Money(gold)))
+    local by = {}
+    for _, row in ipairs(plan.rows) do
+      local k = by[row.o.kind] or { cost = 0, profit = 0 }
+      by[row.o.kind] = k
+      k.cost, k.profit = k.cost + row.cost, k.profit + row.profit
+    end
+    for _, kind in ipairs({ "craft", "resale", "vendor" }) do
+      local k = by[kind]
+      if k then
+        Pair(tt, KIND[kind], Money(k.cost) .. Hex(DIM, " in, ") .. Profit(k.profit))
+      end
+    end
+    Pair(tt, "Crafting and posting", Secs(plan.secs) .. Hex(DIM, " of an hour"))
+    if plan.used < gold * 0.98 then
+      tt:AddLine(Hex(DIM, ("%s finds nothing worth buying"):format(M.Money(gold - plan.used))))
+    end
+    if plan.timeBound then
+      tt:AddLine(Hex(ACCENT, "The hour runs out before the gold: more time would pay more"),
+        nil, nil, nil, true)
+    end
+    tt:AddLine(" ")
+    tt:AddLine("Other pots", LABEL[1], LABEL[2], LABEL[3])
+    for _, c in ipairs(p.curve) do
+      if c.unlimited then
+        Pair(tt, "As much as pays", Profit(c.profit) .. Hex(DIM, " on ") .. Money(c.used))
+      else
+        Pair(tt, M.Money(c.gold), Profit(c.profit) .. Hex(DIM, " on ") .. Money(c.used))
+      end
+    end
+    tt:AddLine(" ")
+    tt:AddLine(Hex(DIM, "A day: crafts up to what sells here a day and the cooldowns, resale "
+      .. "up to what sells, vendor flips what is listed. Gold comes back as it sells, about a "
+      .. "day. Deeper listings cost more, and every flip shares them. Resale and vendor flips "
+      .. "only from AH sightings under 2 hours old."), nil, nil, nil, true)
+  end
+end
+
+local function LedgerTip(p)
+  return function(tt)
+    local l = p.ledger
+    tt:AddLine(("Your trading, last %s days"):format(Qty(l.days)))
+    tt:AddLine(Hex(DIM, "TSM's accounting, every character, as of login"))
+    tt:AddLine(" ")
+    Pair(tt, "Spent: materials, things sold again", Money(l.spent))
+    Pair(tt, "Back: sold what you bought", Money(l.resale))
+    Pair(tt, "Back: sold what you crafted", Money(l.crafted))
+    Pair(tt, "Profit", Profit(l.profit))
+    tt:AddLine(" ")
+    Pair(tt, Hex(DIM, "Not counted: loot sold"), Hex(DIM, M.Money(l.loot)))
+    Pair(tt, Hex(DIM, "Not counted: bought for yourself"), Hex(DIM, M.Money(l.own)))
+    -- by item, sales and spending apart: materials bought would read as losses
+    for _, side in ipairs({ { "back", "Brought in most" }, { "spent", "Spent most on" } }) do
+      local list = {}
+      for _, x in ipairs(l.items) do if x[side[1]] > 0 then list[#list + 1] = x end end
+      table.sort(list, function(a, b) return a[side[1]] > b[side[1]] end)
+      if #list > 0 then
+        tt:AddLine(" ")
+        tt:AddLine(side[2], LABEL[1], LABEL[2], LABEL[3])
+        for i = 1, math.min(4, #list) do
+          Pair(tt, "  " .. ItemName(list[i].id), Money(list[i][side[1]]))
+        end
+      end
+    end
+    tt:AddLine(" ")
+    tt:AddLine(Hex(DIM, "Materials still in your bags count as spent; crafts from looted "
+      .. "materials as all profit. TSM writes new rows on logout."), nil, nil, nil, true)
+  end
+end
+
+local function InvestTop(p)
+  local plan, gold = p.plan, p.gold
+  local ret = plan.used > 0 and plan.profit / plan.used or nil
+  local text = Money(plan.used) .. Hex(DIM, " in, ") .. Money(plan.back)
+    .. Hex(DIM, " back as it sells: ") .. Profit(plan.profit) .. Hex(DIM, " a day")
+  if plan.used < gold * 0.98 then
+    text = text .. Hex(DIM, " · ") .. Hex(ACCENT, M.Money(gold - plan.used) .. " idle")
+  elseif plan.timeBound then
+    text = text .. Hex(DIM, " · ") .. Hex(ACCENT, "time runs out first")
+  end
+  local top = {
+    { head = true, allCells = true, name = ("Best for %s"):format(M.Money(gold)),
+      cells = { "", Money(plan.used), Money(plan.back), Profit(plan.profit), Pct(ret) } },
+    { note = true, name = text, tip = PlanTip(p) } }
+  local l, mirror = p.ledger, p.mirror
+  if l and l.days > 0 then
+    local d = l.days
+    local yours = l.spent > 0 and l.profit / l.spent or nil
+    top[#top + 1] = { head = true, allCells = true,
+      name = ("You, last %s days, a day"):format(Qty(math.floor(d + 0.5))),
+      cells = { "", Money(l.spent / d), Money(l.back / d), Profit(l.profit / d), Pct(yours) } }
+    local note
+    if mirror and mirror.profit > 0 then
+      local share = l.profit / d / mirror.profit
+      local yours = l.profit < 0
+        and Hex(BAD, "you lost " .. M.Money(-l.profit / d) .. " a day")
+        or Hex(share >= 0.9 and GOOD or share >= 0.5 and ACCENT or BAD,
+          "you made " .. Pct(share) .. " of it")
+      note = Hex(DIM, "The plan for your ") .. Money(l.spent / d) .. Hex(DIM, " a day: ")
+        .. Profit(mirror.profit) .. Hex(DIM, " · ") .. yours
+    else
+      note = Hex(DIM, "Nothing bought to trade in TSM's ledger yet")
+    end
+    top[#top + 1] = { note = true, name = note, tip = LedgerTip(p) }
+  end
+  return top
+end
+
+local function InvestRows(pool)
+  local p = Plans(pool)
+  local out = {}
+  for _, row in ipairs(p.plan.rows) do out[#out + 1] = InvestRow(pool, row) end
+  out.top, out.restHead, out.plan = InvestTop(p), "Buy and craft", p.plan
+  return out
+end
+
 VIEWS.flips = {
   title = "Flips",
   rowH = 32,
@@ -2027,13 +2447,15 @@ VIEWS.flips = {
   defaultSort = "day",
   Build = function()
     local s = state.flips
-    local profs = s.view == "profs"
-    VIEWS.flips.columns = profs and PROF_COLUMNS or FLIP_COLUMNS
-    VIEWS.flips.defaultSort = profs and "gain" or "day"
-    VIEWS.flips.ascending = profs and { name = true, skill = true, learn = true } or nil
+    local profs, invest = s.view == "profs", s.view == "invest"
+    VIEWS.flips.columns = profs and PROF_COLUMNS or invest and INVEST_COLUMNS or FLIP_COLUMNS
+    VIEWS.flips.defaultSort = profs and "gain" or invest and "profit" or "day"
+    VIEWS.flips.ascending = profs and { name = true, skill = true, learn = true }
+      or invest and { name = true } or nil
     local data = FlipsData()
     local out = {}
     if not (data and data.key == Key()) then return out end
+    if invest then return data.pool and InvestRows(data.pool) or out end
     if profs then
       for _, p in ipairs(data.list) do out[#out + 1] = ProfRow(p, data.now or 0) end
       out.now = data.now
@@ -2214,8 +2636,30 @@ local function Blocker(steps, shop)
   end
 end
 
--- the craft button for the queue as built: label, enabled, action, and the step when the
--- action crafts
+-- the first unlearnt queued recipe whose recipe item is in the bags and whose skill
+-- requirement is met -> step, item. A route queues patterns for later ranks; offering one
+-- early makes the press fail ("Requires Engineering (140)")
+local function LearnStep(steps)
+  for _, s in ipairs(steps or {}) do
+    if not s.known then
+      local learn, _, _, _, _, item = C.Bands(s.rec)
+      if item and (C.Rank(s.rec.prof) or 0) >= (learn or 0)
+        and (C_Item.GetItemCount(item, false) or 0) > 0 then
+        return s, item
+      end
+    end
+  end
+end
+
+local function Before(steps, a, b)
+  for _, s in ipairs(steps) do
+    if s == a then return true end
+    if s == b then return false end
+  end
+end
+
+-- the craft button for the queue as built: label, enabled, action, the step when the action
+-- crafts, and the recipe item when the press learns one (UI.SetLearn's secure button)
 local function CraftAction(steps, shop)
   if crafting then
     local rec = C.Recipe(crafting.id)
@@ -2226,12 +2670,19 @@ local function CraftAction(steps, shop)
   if M.AuctionShop then shopLabel, shopOn, shopRun = M.AuctionShop.Step(shop) end
   if shopLabel then return shopLabel, shopOn, shopRun end
   local s = C.NextCraft(steps or {}, state.craftMode, OpenProfession())
+  -- a pattern in the bags waits its turn: what's craftable before it in order goes first
+  local learn, item = LearnStep(steps)
+  if learn and not (s and Before(steps, s, learn)) then
+    return "Learn " .. (learn.rec.name or "recipe"), true, nil, nil, item
+  end
   if not s then
     if #(steps or {}) == 0 then return "Nothing queued", false end
     if state.craftMode == "bulk" and C.NextCraft(steps) then
       return Blocker(steps, shop) or "Waiting for materials (Queue mode crafts part)", false
     end
-    return Blocker(steps, shop) or "Nothing craftable from bags", false
+    local lim = shop and shop.limit
+    return Blocker(steps, shop) or lim and (LimitWhy(lim):gsub("^%l", string.upper))
+      or "Nothing craftable from bags", false
   end
   if OpenProfession() ~= s.rec.prof then
     return "Open " .. s.rec.prof, true, function() OpenFor(s.rec.prof) end
@@ -2252,12 +2703,61 @@ local function CraftAction(steps, shop)
     true, Go, s
 end
 
+-- Learning a recipe item is an item use: only a secure button may do it, on a real click. It
+-- covers the Craft button while the queue's next press learns, and the Craft next key clicks
+-- it (override binding). Parented to UIParent and let go when a fight starts, so the panel
+-- stays free to move and hide in combat.
+local learnButton
+function UI.SetLearn(item, label)
+  if InCombatLockdown() then return end
+  if not item then
+    if learnButton and learnButton:IsShown() then
+      learnButton:Hide()
+      learnButton:ClearAllPoints()
+      ClearOverrideBindings(learnButton)
+      if frame then frame.craftButton:SetAlpha(1) end
+    end
+    return
+  end
+  if not learnButton then
+    learnButton = CreateFrame("Button", "MeionomicsLearnButton", UIParent,
+      "SecureActionButtonTemplate, UIPanelButtonTemplate")
+    learnButton:RegisterForClicks("AnyUp", "AnyDown")
+    learnButton:SetAttribute("type", "item")
+    learnButton:HookScript("OnClick", function() UI.RefreshSoon() end)
+    learnButton:SetScript("OnEnter", function(self)
+      GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
+      GameTooltip:SetItemByID(self.item)
+      GameTooltip:AddLine(" ")
+      GameTooltip:AddLine(Hex(DIM, "Learns it from your bags, then Craft next goes on"), nil, nil,
+        nil, true)
+      GameTooltip:Show()
+    end)
+    learnButton:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    M.On("PLAYER_REGEN_DISABLED", function() UI.SetLearn(nil) end)
+  end
+  learnButton.item = item
+  learnButton:SetAttribute("item", "item:" .. item)
+  learnButton:SetText(label)
+  learnButton:ClearAllPoints()
+  learnButton:SetAllPoints(frame.craftButton)
+  -- a layer above the panel: it raises itself (toplevel) over any level set here
+  learnButton:SetFrameStrata("HIGH")
+  learnButton:Show()
+  frame.craftButton:SetAlpha(0)
+  ClearOverrideBindings(learnButton)
+  for _, key in ipairs({ GetBindingKey("MEIONOMICS_CRAFT_NEXT") }) do
+    SetOverrideBindingClick(learnButton, true, key, "MeionomicsLearnButton", "LeftButton")
+  end
+end
+
 -- the Craft button from a key binding or /meio next, panel open or not
 -- one: craft only 1 of the step (the Craft 1 button)
 function UI.CraftNext(one)
   if R.Viewer() then UI.ViewAs(nil) end
   local shop = C.Shopping()
-  local label, enabled, action, s = CraftAction(C.CraftSteps(shop), shop)
+  local label, enabled, action, s, learn = CraftAction(C.CraftSteps(shop), shop)
+  if learn then label = label .. Hex(DIM, ": click Learn on the Queue tab") end
   if one and s then return StartCraft(s, 1) end
   if enabled and action then return action() end
   if frame and frame:IsShown() then UI.Say(Hex(DIM, label)) else M.Print(label) end
@@ -2643,6 +3143,10 @@ local function Status(list)
   end
   if state.view == "flips" then
     if VIEWS.flips.Status() then return VIEWS.flips.Status() end
+    if list.plan then
+      return Hex("ffffff", #list.plan.rows) .. Hex(DIM, " buys and crafts   ")
+        .. Hints({ "Click", "queue a craft" }) .. Hex(DIM, "   Gold: type a pot above")
+    end
     if list.now then
       return Hex(DIM, "Now ") .. Profit(list.now) .. Hex(DIM, " a day from your best 5 flips   ")
         .. Hints({ "Click", "its flips" })
@@ -2697,7 +3201,7 @@ function UI.Refresh()
     route and -10 or -6, 0)
   for _, w in ipairs(frame.routeBar) do w:SetShown(route) end
   frame.routeOpts:GenerateMenu()
-  frame.routeQueue:SetEnabled(not (whatIf or R.Viewer()))
+  frame.routeQueue:SetEnabled(not R.Viewer())
   frame.profMenu:SetShown(not (queue or find or flips))
   frame.profMenu:SetWidth(route and 110 or skill and 100 or 130)
   frame.profMenu:ClearAllPoints()
@@ -2717,9 +3221,13 @@ function UI.Refresh()
   frame.flipsBar:SetShown(flips)
   if flips then
     for _, d in ipairs(frame.flipsBar.menus) do d:GenerateMenu() end
-    local list = state.flips.view ~= "profs"
-    frame.flipsBar.prof:SetShown(list)
-    frame.flipsBar.search:SetShown(list)
+    local bar, view = frame.flipsBar, state.flips.view
+    bar.prof:SetShown(view == "flips")
+    bar.search:SetShown(view == "flips")
+    bar.gold:SetShown(view == "invest")
+    if view == "invest" and not bar.gold:HasFocus() then
+      bar.gold:SetText(state.flips.gold and tostring(state.flips.gold) or "")
+    end
   end
   local view = VIEWS[ViewKey()]
   local list = (prof or view.anyProf) and view.Build(prof, rank) or {}
@@ -2727,7 +3235,7 @@ function UI.Refresh()
   if view.Finish then view.Finish(list, SortKey(view)) end
   if list.top then
     if list[1] and not list[1].head then
-      table.insert(list, 1, { head = true, name = "Every recipe" })
+      table.insert(list, 1, { head = true, name = list.restHead or "Every recipe" })
     end
     for i = #list.top, 1, -1 do table.insert(list, 1, list.top[i]) end
   end
@@ -2742,8 +3250,10 @@ function UI.Refresh()
   frame.clearButton:SetEnabled(next(C.Queue()) ~= nil)
   frame.craftMode:SetShown(queue)
   frame.craftMode:GenerateMenu()
+  if not queue then UI.SetLearn(nil) end
   if queue then
-    local label, enabled, action, s = CraftAction(list.steps, list.shop)
+    local label, enabled, action, s, learn = CraftAction(list.steps, list.shop)
+    UI.SetLearn(learn, label)
     frame.craftButton:SetText(label)
     frame.craftButton:SetEnabled(enabled)
     frame.craftButton.action = action
@@ -2770,6 +3280,14 @@ function UI.RefreshSoon()
     pending = nil
     UI.Refresh()
   end)
+end
+
+-- AH prices moved (a scan, any search): every list is priced again; the old one shows while
+-- Find and Flips rebuild
+function UI.PricesChanged()
+  priceGen = priceGen + 1
+  R.ResetCache()
+  UI.RefreshSoon()
 end
 
 ------------------------------------------------------------------------------ Feedback
@@ -2840,6 +3358,13 @@ local function SetAltMats(on)
   if on then state.altMats = nil else state.altMats = false end
   UI.AltsChanged()
 end
+-- { place, menu label, chat name } as C.UsesFrom takes them
+local FROM = { { "bank", "Bank", "bank" }, { "mail", "Mailbox", "mail" },
+  { "guild", "Guild bank", "guild" } }
+local function SetFrom(place, on)
+  if on then state.useFrom[place] = nil else state.useFrom[place] = false end
+  UI.AltsChanged()
+end
 
 local function StopBox(dialog)
   return dialog.GetEditBox and dialog:GetEditBox() or dialog.editBox
@@ -2883,10 +3408,17 @@ function C.OnPruned(gone)
   local parts = {}
   for _, g in ipairs(gone) do
     if crafting and crafting.id == g.rec.id then crafting = nil end
-    parts[#parts + 1] = ("%s %d reached: %s x%d"):format(g.rec.prof, g.stop,
-      g.rec.name or g.rec.id, g.n)
+    local name = g.rec.name or g.rec.id
+    local part = ("%s %d reached: "):format(g.rec.prof, g.stop)
+    if (g.kept or 0) > 0 then
+      part = part .. ("%s x%d kept for profit"):format(name, g.kept)
+        .. (g.n > 0 and (", x%d off the queue"):format(g.n) or "")
+    else
+      part = part .. ("%s x%d off the queue"):format(name, g.n)
+    end
+    parts[#parts + 1] = part
   end
-  local text = Hex(GOOD, table.concat(parts, ", ")) .. Hex(DIM, " off the queue")
+  local text = Hex(GOOD, table.concat(parts, ", "))
   if frame and frame:IsShown() then UI.Say(text) else M.Print(text) end
 end
 
@@ -3104,7 +3636,9 @@ local function CreateRouteBar()
       .. " else costs less. On: what your mats level comes first, counted free (scarce ones"
       .. " rationed), then the route" })
   Help(queue, function(self)
-    if not self:IsEnabled() then return { "Queue route", "What if: a plan to read, not to craft" } end
+    if not self:IsEnabled() then
+      return { "Queue route", "An alt's route: log in on it to queue its crafts" }
+    end
     return { "Queue route", "Replaces the queue with every step's crafts (Shift-click: adds"
       .. " them to it instead)",
       "Then the Queue tab: Craft next makes them in order. Right-click a step to take it off." }
@@ -3216,7 +3750,8 @@ end
 -- profession and character the list is limited to
 local FLIP_EXITS = { { "ah", "Sold on the AH" }, { "vendor", "Sold to a vendor" },
   { "de", "Disenchanted" } }
-local FLIP_VIEWS = { { "flips", "Flips" }, { "profs", "By profession" } }
+local FLIP_VIEWS = { { "flips", "Flips" }, { "profs", "By profession" },
+  { "invest", "Invest" } }
 
 -- every character's name once: old records of a renamed or recreated one share it
 local function CharNames()
@@ -3244,11 +3779,13 @@ function VIEWS.flips.CreateBar()
   local menu = Dropdown(120, function(_, root)
     local f = state.flips
     root:CreateTitle("Recipes")
+    -- Invest plans with known recipes only: learning is By profession's question
     for _, sc in ipairs(VIEWS.flips.SCOPES) do
-      root:CreateRadio(sc[2], function() return f.scope == sc[1] end, function()
+      local radio = root:CreateRadio(sc[2], function() return f.scope == sc[1] end, function()
         f.scope = sc[1]
         Changed()
       end)
+      if f.view == "invest" then radio:SetEnabled(false) end
     end
     root:CreateDivider()
     root:CreateCheckbox("Chains only", function() return f.multi end, function()
@@ -3268,6 +3805,7 @@ function VIEWS.flips.CreateBar()
   menu:SetPoint("TOPRIGHT", 0, -2)
   menu:SetSelectionText(function()
     local f = state.flips
+    if f.view == "invest" then return "Known" end
     local text = "Known"
     for _, sc in ipairs(VIEWS.flips.SCOPES) do if sc[1] == f.scope then text = sc[2] end end
     return f.multi and (text .. ", chains") or text
@@ -3290,11 +3828,13 @@ function VIEWS.flips.CreateBar()
   view:SetParent(bar)
   view:SetPoint("RIGHT", menu, "LEFT", -4, 0)
   view:SetSelectionText(function()
-    return state.flips.view == "profs" and "By profession" or "Flips"
+    for _, v in ipairs(FLIP_VIEWS) do if v[1] == state.flips.view then return v[2] end end
+    return "Flips"
   end)
   Help(view, { "View", "Flips: every money-making chain", "By profession: what each "
     .. "profession's recipes would add to your best 5 flips a day, so you can see what to "
-    .. "learn next. Click one to list its flips" })
+    .. "learn next. Click one to list its flips", "Invest: where a pot of gold makes most a "
+    .. "day (crafts, AH resale, vendor flips), and how your trading compares" })
   local prof = Dropdown(104, function(_, root)
     local names = VIEWS.flips.LineNames()
     local lines = {}
@@ -3349,7 +3889,30 @@ function VIEWS.flips.CreateBar()
   end)
   search:SetText(state.flips.text or "")
   Help(search, { "Search", "Flips whose result, recipe or any step has every word you type" })
-  bar.search, bar.menu, bar.view, bar.prof = search, menu, view, prof
+  local gold = CreateFrame("EditBox", nil, bar, "InputBoxTemplate")
+  gold:SetSize(90, 20)
+  gold:SetPoint("LEFT", 12, -1)
+  gold:SetAutoFocus(false)
+  gold:SetNumeric(true)
+  gold:SetMaxLetters(7)
+  local unit = gold:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  unit:SetPoint("LEFT", gold, "RIGHT", 4, 0)
+  unit:SetText("gold a day")
+  local function Apply(self)
+    local n = tonumber(self:GetText() or "")
+    n = n and n > 0 and n or nil
+    if n == state.flips.gold then return end
+    state.flips.gold = n
+    Changed()
+  end
+  gold:SetScript("OnEnterPressed", function(self)
+    Apply(self)
+    self:ClearFocus()
+  end)
+  gold:SetScript("OnEditFocusLost", Apply)
+  Help(gold, { "Gold to invest", "What you'd put in a day: the plan puts it where each gold "
+    .. "returns most", "Empty: the gold this character has" })
+  bar.search, bar.menu, bar.view, bar.prof, bar.gold = search, menu, view, prof, gold
   bar.menus = { menu, view, prof }
   bar:Hide()
 end
@@ -3489,6 +4052,7 @@ local function Create()
       .. "bags allow now. " .. (key and ("Key: " .. key) or "Key binding: Options > Keybindings "
       .. "> AddOns > Meionomics") .. "; /meio craft next" }
   end)
+  frame:HookScript("OnHide", function() UI.SetLearn(nil) end)
   frame.oneButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
   frame.oneButton:SetSize(64, 22)
   frame.oneButton:SetPoint("RIGHT", frame.craftButton, "LEFT", -6, 0)
@@ -3534,6 +4098,18 @@ local function Create()
       end)
     end
     root:CreateDivider()
+    root:CreateTitle("Count mats in")
+    for _, f in ipairs(FROM) do
+      local box = root:CreateCheckbox(f[2], function() return C.UsesFrom(f[1]) end,
+        function() SetFrom(f[1], not C.UsesFrom(f[1])) end)
+      box:SetTooltip(function(tt)
+        GameTooltip_SetTitle(tt, f[2])
+        GameTooltip_AddNormalLine(tt, "Untick to leave what's there out of the shopping "
+          .. "list, routes and verdicts: it gets bought or crafted instead. /meio craft "
+          .. f[3] .. " on||off")
+      end)
+    end
+    root:CreateDivider()
     root:CreateTitle("Mats on other characters")
     local function Mats(text, tip, on)
       local radio = root:CreateRadio(text, function() return C.UsesAlt() == on end,
@@ -3543,10 +4119,11 @@ local function Create()
         GameTooltip_AddNormalLine(tt, tip)
       end)
     end
-    Mats("Use them", "The shopping list and routes count what your alts (and guild bank) "
-      .. "hold: mail it over instead of buying. /meio craft alts on", true)
-    Mats("This character's only", "Only your bags, bank and mailbox count; the rest is "
-      .. "bought or crafted. /meio craft alts off", false)
+    Mats("Use them", "The shopping list and routes count what your alts hold: mail it "
+      .. "over instead of buying. /meio craft alts on", true)
+    Mats("This character's only", "Only this character's mats count (bank, mailbox and "
+      .. "guild bank as ticked above); the rest is bought or crafted. /meio craft alts off",
+      false)
     local others = M.Inventory.Others()
     if #others > 0 then
       local sub = root:CreateButton("Which alts")
@@ -3808,6 +4385,10 @@ function M.OnLoad()
   if state.shopFor ~= "speed" then state.shopFor = "price" end
   if state.altMats ~= false then state.altMats = nil end
   state.altSkip = type(state.altSkip) == "table" and state.altSkip or {}
+  -- the guild bank counted with alts before it had its own tick: kept out where alts were
+  if type(state.useFrom) ~= "table" then
+    state.useFrom = { guild = state.altMats == false and false or nil }
+  end
   state.route = type(state.route) == "table" and state.route or {}
   state.route.unverified = nil
   -- useHeld was on by default before: turned off once, then his choice
@@ -3841,7 +4422,10 @@ M.On("TRADE_SKILL_SHOW", function()
   whatIf = nil
   R.SetViewer(nil)
   HookProfessionsFrame()
-  C_Timer.After(0, function() if state.auto and OpenProfession() then UI.Show() end end)
+  -- a panel already open still showed the what-if or alt just cleared
+  C_Timer.After(0, function()
+    if state.auto and OpenProfession() then UI.Show() else UI.RefreshSoon() end
+  end)
 end)
 M.On("TRADE_SKILL_CLOSE", function()
   crafting = nil
@@ -3879,6 +4463,15 @@ M.commands.craft = function(rest)
     local on = arg == "on" or arg ~= "off" and not C.UsesAlt()
     SetAltMats(on)
     M.Print("queue uses mats on other characters: " .. M.OnOff(on))
+  elseif rest:match("^bank") or rest:match("^mail") or rest:match("^guild") then
+    local word, arg = rest:match("^(%a+)%s*(.*)$")
+    for _, f in ipairs(FROM) do
+      if f[3] == word then
+        local on = arg == "on" or arg ~= "off" and not C.UsesFrom(f[1])
+        SetFrom(f[1], on)
+        M.Print("queue counts mats in the " .. f[2]:lower() .. ": " .. M.OnOff(on))
+      end
+    end
   elseif rest == "reset" then
     state.dockAt, state.dockAtTSM, state.freeAt, state.size = nil, nil, nil, nil
     if frame then frame:SetSize(W, H) end

@@ -336,12 +336,23 @@ end
 -- what learning a recipe costs -> cost, from ("trainer" | "pattern" | "held"), estimated.
 -- 0 when known or the pattern is already held; trainer fee once visited, else the pattern's
 -- price, else a fee estimated from recorded ones.
+-- a trainer recipe with a recipe item too: that item when it's up on the AH for less than the
+-- fee -> its C.PatternSource, else nil
+function C.CheaperPattern(rec, item)
+  local fee = rec.train and rec.train.cost
+  if not (item and fee and fee > 0) then return nil end
+  local src = C.PatternSource(item)
+  if src.how == "ah" and src.price and src.price < fee then return src end
+end
+
 function C.LearnCost(rec, item, learn)
   if R.KnownHere(rec) then return 0, "known" end
+  if item and C.Have(item).total > 0 then return 0, "held" end
   local fee = rec.train and rec.train.cost
+  local cheaper = C.CheaperPattern(rec, item)
+  if cheaper then return cheaper.price, "pattern" end
   if fee and fee > 0 then return fee, "trainer" end
   if item then
-    if C.Have(item).total > 0 then return 0, "held" end
     local price = C.PatternPrice(item)
     if price then return price, "pattern" end
     return nil, "pattern"
@@ -387,6 +398,8 @@ function C.AddBought(itemID, n)
     b[itemID] = e
   end
   e.n, e.t = e.n + n, M.Now()
+  e.at = e.at or {}
+  e.at[#e.at + 1] = { e.t, n }
   R.ResetCache()
 end
 
@@ -399,6 +412,19 @@ function C.BoughtPending(itemID)
     return 0
   end
   return e.n
+end
+
+-- of those, bought at time t or later (nil: any time): gone from a listing count taken at t
+function C.BoughtSince(itemID, t)
+  local pending = C.BoughtPending(itemID)
+  if pending == 0 or not t then return pending end
+  local e = Bought()[itemID]
+  if not e.at then return e.t >= t and pending or 0 end
+  local n = 0
+  for _, b in ipairs(e.at) do
+    if b[1] >= t then n = n + b[2] end
+  end
+  return math.min(n, pending)
 end
 
 M.On("MAIL_INBOX_UPDATE", function()
@@ -414,6 +440,13 @@ function C.UsesAlt(key)
   return not (key and s.altSkip and s.altSkip[key])
 end
 
+-- craftUI.useFrom[place] false: that place's mats don't count as held. place: "bank" | "mail" |
+-- "guild"; AH buys on their way to the mailbox still count
+function C.UsesFrom(place)
+  local s = M.db.craftUI
+  return not (s and s.useFrom and s.useFrom[place] == false)
+end
+
 function C.HaveNow(itemID)
   local inv = I.Get(itemID)
   local bought = C.BoughtPending(itemID)
@@ -421,10 +454,11 @@ function C.HaveNow(itemID)
     return { bags = 0, bank = 0, mail = bought, alts = 0, total = bought, altList = {} }
   end
   local me = inv.me
-  local h = { bags = me.bags or 0, bank = me.bank or 0, mail = (me.mail or 0) + bought,
-    alts = 0, altList = {} }
+  local h = { bags = me.bags or 0, bank = C.UsesFrom("bank") and me.bank or 0,
+    mail = (C.UsesFrom("mail") and me.mail or 0) + bought, alts = 0, altList = {} }
+  if C.UsesFrom("guild") then h.alts = inv.guild end
   if C.UsesAlt() then
-    h.alts = inv.warband + inv.guild
+    h.alts = h.alts + inv.warband
     for _, a in ipairs(inv.alts) do
       if C.UsesAlt(a.key) then
         h.altList[#h.altList + 1] = a
@@ -550,7 +584,8 @@ function C.ClearQueue()
   wipe(Stops())
 end
 
--- crafts queued for a skill his rank has reached: off the queue, C.OnPruned told.
+-- crafts queued for a skill his rank has reached: off the queue, C.OnPruned told. A craft
+-- that sells at a profit stays as far as the materials held go, without its stop (g.kept).
 -- Not while the panel shows an alt (C.Rank would be theirs)
 function C.PruneQueue()
   if R.Viewer() then return end
@@ -561,8 +596,10 @@ function C.PruneQueue()
     if not q[id] then
       stops[id] = nil
     elseif rank and rank >= stop then
-      gone[#gone + 1] = { rec = rec, n = q[id], stop = stop }
-      q[id], stops[id] = nil, nil
+      local profit = rec.mats and R.Evaluate(rec).profit
+      local kept = profit and profit > 0 and math.min(q[id], select(2, C.Makeable(rec))) or 0
+      gone[#gone + 1] = { rec = rec, n = q[id] - kept, stop = stop, kept = kept }
+      q[id], stops[id] = kept > 0 and kept or nil, nil
     end
   end
   if #gone > 0 and C.OnPruned then C.OnPruned(gone) end
@@ -689,12 +726,12 @@ end
 -- materials, or when cheaper than buying. Shopping for speed (M.db.craftUI.shopFor) buys
 -- intermediates the AH has a price for instead: one purchase, no crafting step.
 -- -> { mats = { { id, need, crafted, bags, bank, mail, alts, fromAlts = { {name, n} },
---        buy, price } ... },
+--        buy, price, trainer (a recipe item bought instead: the trainer's fee) } ... },
 --      crafts = { recipeID -> { n, saves } } intermediates to craft first,
---      buyCost, complete, profit (queued crafts, priced ones), saves }
-function C.Shopping()
-  C.PruneQueue()
-  R.ResetCache()
+--      buyCost, complete, profit (queued crafts, priced ones), saves,
+--      limit (C.Shopping: what stopped it short of the whole queue) }
+-- queue: recipeID -> crafts
+local function Shop(queue)
   local need, crafts, order = {}, {}, {}
   local function Add(rec, n, intermediate)
     if intermediate then
@@ -712,7 +749,7 @@ function C.Shopping()
   end
   local out = { mats = {}, crafts = crafts, buyCost = 0, complete = true, profit = 0,
     saves = 0 }
-  for id, n in pairs(Queue()) do
+  for id, n in pairs(queue) do
     local rec = C.Recipe(id)
     if rec and rec.mats then
       Add(rec, n, false)
@@ -720,25 +757,74 @@ function C.Shopping()
       if e.profit then out.profit = out.profit + e.profit * n end
     end
   end
-  -- a tool none is held of (Runed Truesilver Rod): one made first, as an intermediate
+  -- unlearnt queued recipes whose pattern is up on the AH (no vendor sells it; under the
+  -- trainer's fee for a trainer recipe): one each. Once bought it's held and drops off; once
+  -- learnt the recipe no longer asks
+  local trainerFee = {}
+  for id in pairs(queue) do
+    local rec = C.Recipe(id)
+    local item = rec and rec.mats and select(6, C.Bands(rec))
+    if item and not need[item] and select(2, C.LearnCost(rec, item)) == "pattern"
+      and C.PatternSource(item).how == "ah" then
+      need[item] = 1
+      order[#order + 1] = item
+      trainerFee[item] = rec.train and rec.train.cost
+    end
+  end
+  -- a tool none is held of (Runed Truesilver Rod): one made first, as an intermediate, or
+  -- bought when that is cheaper (Blacksmith Hammer, 18c at a vendor: Engineering's only
+  -- hammer is the Gnomish Army Knife), as the route does
   local tooled = {}
-  for id in pairs(Queue()) do
+  for id in pairs(queue) do
     local rec = C.Recipe(id)
     local cat = rec and rec.mats and C.MissingTool(rec)
-    local t = cat and not tooled[cat] and C.ToolRecipe(cat, rec.prof)
-    if t and not Queue()[t.id] then
-      tooled[cat] = true
-      Add(t, 1, true)
-      crafts[t.id].tool = C.ToolName(cat)
+    if cat and not tooled[cat] then
+      local t = C.ToolRecipe(cat, rec.prof)
+      local e = t and R.Evaluate(t)
+      local makes = e and e.complete and e.cost
+      if makes and not R.KnownHere(t) then
+        local fee = C.LearnCost(t, select(6, C.Bands(t)))
+        makes = fee and makes + fee
+      end
+      local item, price
+      for _, it in ipairs(M.CraftTools[cat][2]) do
+        local p = R.MatPrice(it)
+        if p and (not price or p < price) then item, price = it, p end
+      end
+      if item and not (makes and makes < price) then
+        tooled[cat] = true
+        if not need[item] then
+          need[item] = 1
+          order[#order + 1] = item
+        end
+      elseif t and not queue[t.id] then
+        tooled[cat] = true
+        Add(t, 1, true)
+        crafts[t.id].tool = C.ToolName(cat)
+      end
+    end
+  end
+  -- copies: C.Have's tables are cached, and h.crafted is this list's own
+  local held = {}
+  local function Held(id)
+    if not held[id] then
+      held[id] = {}
+      for k, v in pairs(C.Have(id)) do held[id][k] = v end
+    end
+    return held[id]
+  end
+  -- what queued crafts make covers later queued crafts' need (a route's tubes, bolts and
+  -- powder), else it was bought or made again as an intermediate. Every output: an
+  -- intermediate added below can need one (powder for its own mats)
+  for id, n in pairs(queue) do
+    local rec = C.Recipe(id)
+    if rec and rec.mats and rec.out then
+      local h = Held(rec.out)
+      h.crafted = (h.crafted or 0) + n * R.Made(rec)
     end
   end
   -- intermediates: what still has to be bought, crafted instead when cheaper (repeated for
   -- the intermediates' own materials)
-  local held = {}
-  local function Held(id)
-    held[id] = held[id] or C.Have(id)
-    return held[id]
-  end
   -- own: this character's bags, bank and mail, without alts
   local function Count(h, own) return own and h.bags + h.bank + h.mail or h.total end
   local function Spare(id, own)
@@ -790,7 +876,8 @@ function C.Shopping()
   for _, id in ipairs(order) do
     local h = held[id] or C.Have(id)
     local left = math.max(0, need[id] - (h.crafted or 0))
-    local row = { id = id, need = need[id], crafted = h.crafted or 0, fromAlts = {} }
+    local row = { id = id, need = need[id], crafted = h.crafted or 0, fromAlts = {},
+      trainer = trainerFee[id] }
     for _, k in ipairs({ "bags", "bank", "mail", "alts" }) do
       row[k] = math.max(0, math.min(left, h[k]))
       left = left - row[k]
@@ -826,6 +913,78 @@ function C.Shopping()
     return a.id < b.id
   end)
   return out
+end
+
+
+-- what the AH can't supply of a list, or its cost over the gold held -> why, itemID, short.
+-- Listings: own last scan, else TSM's count, less what he bought since. Never short: vendor
+-- goods, unscanned items, scans older than LISTED_FRESH, and none up at all (thread whose
+-- vendor isn't recorded yet). up: units up per item, filled as asked (one per C.Shopping)
+local LISTED_FRESH = 6 * 3600
+local function UpNow(id)
+  if P.VendorBuy(id) then return false end
+  local s = P.SellRate(id)
+  if not (s and (s.listed or 0) > 0) or s.age and s.age > LISTED_FRESH then return false end
+  return math.max(0, s.listed - C.BoughtSince(id, s.t))
+end
+local function Unbuyable(shop, up)
+  for _, m in ipairs(shop.mats) do
+    if m.buy > 0 then
+      if up[m.id] == nil then up[m.id] = UpNow(m.id) end
+      local n = up[m.id]
+      if n and m.buy > n then return "ah", m.id, m.buy - n end
+    end
+  end
+  if shop.buyCost > GetMoney() then return "gold", nil, shop.buyCost - GetMoney() end
+end
+
+-- The queue's shopping list. When the AH or his gold can't cover it all: the list for as many
+-- queued crafts as can be bought, taken in Craft next's order (a step cut short, the rest left
+-- off), so what is bought levels as far as it goes and nothing waits on a missing mat.
+-- limit = { why = "ah"|"gold", id, short, crafts, of }; full: the whole queue's list.
+-- whole: the whole queue's, never cut (what selling must leave alone)
+function C.Shopping(whole)
+  C.PruneQueue()
+  R.ResetCache()
+  local q = Queue()
+  local full = Shop(q)
+  if whole then return full end
+  local up = {}
+  local stop = { Unbuyable(full, up) }
+  if not stop[1] then return full end
+  local order, seen, total = {}, {}, 0
+  for _, st in ipairs(C.CraftSteps(full)) do
+    local id = st.rec.id
+    if st.queued and q[id] and not seen[id] then
+      seen[id] = true
+      order[#order + 1] = id
+      total = total + q[id]
+    end
+  end
+  -- the first k queued crafts in that order
+  local function First(k)
+    local part = {}
+    for _, id in ipairs(order) do
+      if k <= 0 then break end
+      part[id] = math.min(q[id], k)
+      k = k - part[id]
+    end
+    return part
+  end
+  -- the most crafts that fit, assuming more never fit better: lo fits (shop its list), hi + 1
+  -- doesn't (stop says why)
+  local lo, hi, shop = 0, total - 1, nil
+  while lo < hi do
+    local mid = math.ceil((lo + hi) / 2)
+    local s = Shop(First(mid))
+    local why = { Unbuyable(s, up) }
+    if why[1] then hi, stop = mid - 1, why else lo, shop = mid, s end
+  end
+  shop = shop or Shop(First(lo))
+  shop.limit = { why = stop[1], id = stop[2], short = stop[3], crafts = lo,
+    of = C.QueueCount() }
+  shop.full = full
+  return shop
 end
 
 ------------------------------------------------------------------------------ Crafting
@@ -871,20 +1030,39 @@ local function TotalPoints(steps)
   return t
 end
 
--- the order with the most expected points. Steps at one depth don't use each other's output,
--- so any order works: those going grey soonest first, then neighbours swapped while it gains
+-- Each step is due by a skill: its stop (a route queues each step up to where the next takes
+-- over), else where it goes grey. Due soonest first, an intermediate just before the first
+-- step using it; then neighbours swapped while it gains points, but never a producer past its
+-- user, nor across steps with a stop (the route's order: crafting a later step's recipe early
+-- spends its points where the earlier step's give them, and greys the earlier one)
+local function Due(s) return s.stop or s.grey end
+
 local function ForPoints(steps)
   table.sort(steps, function(a, b)
-    if a.depth ~= b.depth then return a.depth > b.depth end
+    if Due(a) ~= Due(b) then return Due(a) < Due(b) end
     if a.grey ~= b.grey then return a.grey < b.grey end
     return (a.rec.name or "") < (b.rec.name or "")
   end)
+  local order, placed = {}, {}
+  local function Place(s)
+    if placed[s] then return end
+    placed[s] = true
+    for _, src in ipairs(s.makers) do Place(src) end
+    order[#order + 1] = s
+  end
+  for _, s in ipairs(steps) do Place(s) end
+  for i, s in ipairs(order) do steps[i] = s end
+  local function Fixed(a, b)
+    if a.stop or b.stop then return a.stop ~= b.stop end
+    for _, src in ipairs(b.makers) do if src == a then return true end end
+    return false
+  end
   local best = TotalPoints(steps)
   for _ = 1, #steps do
     local better = false
     for i = 1, #steps - 1 do
       local a, b = steps[i], steps[i + 1]
-      if a.depth == b.depth then
+      if not Fixed(a, b) then
         steps[i], steps[i + 1] = b, a
         local t = TotalPoints(steps)
         if t > best + 1e-6 then
@@ -899,8 +1077,8 @@ local function ForPoints(steps)
   steps.gain = SimulatePoints(steps)
 end
 
--- The queue as crafts in order: intermediates first (deepest first: bolts before the item),
--- then for the most skill points (ForPoints). Each { rec, n (wanted), can (from bags now),
+-- The queue as crafts in order (ForPoints): by the skill each is due by, intermediates before
+-- their users. Each { rec, n (wanted), can (from bags now),
 -- queued, stop (C.QueueStop), saves, enchant, known, missing = { { id, short } }, points,
 -- var, from, to };
 -- steps.gain: prof -> { points, var, from, to }. Enchants go on an item (C.EnchantTarget), one
@@ -910,7 +1088,7 @@ function C.CraftSteps(shop)
   shop = shop or C.Shopping()
   local steps, byOut = {}, {}
   local function Add(rec, n, queued, saves)
-    local s = { rec = rec, n = n, queued = queued, saves = saves, depth = 0,
+    local s = { rec = rec, n = n, queued = queued, saves = saves, makers = {},
       grey = select(4, C.Bands(rec)) or math.huge, enchant = not rec.out, known = R.KnownHere(rec) and true or false, missing = {} }
     local can = math.huge
     for _, m in ipairs(rec.mats) do
@@ -936,16 +1114,14 @@ function C.CraftSteps(shop)
       steps[#steps].stop = C.QueueStop(id)
     end
   end
-  -- an intermediate goes one deeper than the deepest step using it, a tool's than its users
-  local function Deeper(src, s)
-    if src and src ~= s and src.depth <= s.depth then src.depth = s.depth + 1 end
+  -- the steps making a step's materials or tools (cloth into bolts before the bolts' users)
+  local function Feeds(src, s)
+    if src and src ~= s then s.makers[#s.makers + 1] = src end
   end
-  for _ = 1, MAX_DEPTH do
-    for _, s in ipairs(steps) do
-      for _, m in ipairs(s.rec.mats) do Deeper(byOut[m[1]], s) end
-      for _, cat in ipairs(C.ToolCats(s.rec) or {}) do
-        for _, item in ipairs(M.CraftTools[cat][2]) do Deeper(byOut[item], s) end
-      end
+  for _, s in ipairs(steps) do
+    for _, m in ipairs(s.rec.mats) do Feeds(byOut[m[1]], s) end
+    for _, cat in ipairs(C.ToolCats(s.rec) or {}) do
+      for _, item in ipairs(M.CraftTools[cat][2]) do Feeds(byOut[item], s) end
     end
   end
   ForPoints(steps)
@@ -1007,15 +1183,19 @@ end
 -- queue: the first with anything craftable, partial batches included.
 -- bulk: only a step whose whole count is in bags, so each recipe is one batch; the open
 --   profession's first (no "Open" press in between)
+-- Neither passes a step with a stop (a route's) that can't go yet for a later one of its
+-- profession: that one's points are planned for after it
 function C.NextCraft(steps, mode, openProf)
-  local first
+  local first, held = nil, {}
   for _, s in ipairs(steps) do
-    if Ready(s, openProf) then
-      if mode ~= "bulk" then return s end
-      if s.can >= s.n then
-        if s.rec.prof == openProf then return s end
-        first = first or s
-      end
+    local prof = s.rec.prof
+    local go = not (s.stop and held[prof]) and Ready(s, openProf)
+      and (mode ~= "bulk" or s.can >= s.n)
+    if go then
+      if mode ~= "bulk" or prof == openProf then return s end
+      first = first or s
+    elseif s.stop and prof then
+      held[prof] = true
     end
   end
   return first

@@ -603,6 +603,20 @@ function R.SetViewer(key)
   R.ResetCache()
   Changed()
 end
+-- fn(...) as if viewing key (nil: this character), listeners not told: another character's
+-- route planned a slice at a time while the panel shows this one
+function R.AsViewer(key, fn, ...)
+  if key == charKey then key = nil end
+  local old = viewKey
+  if key == old then return fn(...) end
+  viewKey = key
+  R.ResetCache()
+  local res = { pcall(fn, ...) }
+  viewKey = old
+  R.ResetCache()
+  if not res[1] then error(res[2], 0) end
+  return unpack(res, 2)
+end
 function R.Me() return charKey end
 -- key -> { name, class, profs }, every character logged in since Meionomics recorded them
 function R.Chars() return db.chars end

@@ -8,6 +8,7 @@
 --                    the rest planned around it; ignored when it can't be used there
 --   opts.max         the training cap, for a rank not his (what-if); else his own
 --   opts.heldFree    held materials cost nothing (already paid for), so the route spends them
+--   opts.others      Route.Reserved's: held units other routes need cost what buying costs
 --   C.Route.Alternatives(plan, step, max) -> other recipes for a step's stretch, cheapest first
 --   C.Route.Start(prof, rank, target, opts) -> job: Plan a slice at a time; job.Step() runs one
 --                    (true when done), then job.plan, or job.err
@@ -57,9 +58,8 @@ local searchScale = 1
 -- routes that earn (Alchemy 1-300 resale 346g vs 166g). Alone it chases outputs whose guessed
 -- value Cost doesn't confirm (LW 1-300 resale 6.6g worse), so both run and Effort picks
 local searchProfit = false
-local function CraftEffort(k)
-  return math.max(EFFORT_MIN, EFFORT_PER_RANK * k) * searchScale
-end
+local function TimeCost(k) return math.max(EFFORT_MIN, EFFORT_PER_RANK * k) end
+local function CraftEffort(k) return TimeCost(k) * searchScale end
 
 ------------------------------------------------------------------------------ Market
 -- per item for one plan (Plan and FromHeld wipe it): a plan solves hundreds of times, and
@@ -148,8 +148,13 @@ local function Candidates(prof, opts, skipped)
       item = item, estLearn = estLearn, fee = 0, setup = 0 }
     local station = R.Station(rec)
     if station then c.setup, c.station = station.cost, station end
+    local cheaper = not R.KnownHere(rec) and C.CheaperPattern(rec, item)
     if R.KnownHere(rec) then
       c.how = "known"
+    elseif item and rec.train and C.Have(item).total > 0 then
+      c.how, c.held = "pattern", true
+    elseif cheaper then
+      c.how, c.fee, c.src, c.trainFee = "pattern", cheaper.price, cheaper, rec.train.cost
     elseif rec.train then
       c.how, c.fee = "trainer", rec.train.cost or 0
     elseif item then
@@ -187,15 +192,30 @@ end
 -- sold by a vendor: never short, whatever the AH has up
 local function Vendor(id) return P.VendorBuy(id) end
 
-local function HeldCost(opts, id, pile, n)
-  return opts.heldFree and 0 or V.HeldCost(id, pile, n)
-end
-
 local function BuyPrice(id)
   local p = R.MatPrice(id)
   local _, each = C.CraftInstead(id)
   if each and (not p or each < p) then return each, true end
   return p
+end
+
+-- n of a held pile: the units nothing else needs at what they'd sell for (those that would
+-- sell last first), then those another route needs (opts.others) at what it would pay
+local function HeldValue(opts, id, pile, n)
+  if n <= 0 then return 0 end
+  local o = opts.others and opts.others[id]
+  local spare = pile - math.min(pile, o and o.n or 0)
+  local a = math.min(n, spare)
+  local v = a > 0 and V.HeldCost(id, spare, a) or 0
+  if n > a then
+    local buy = BuyPrice(id)
+    v = v + (buy and (n - a) * buy or V.HeldCost(id, pile, n - a))
+  end
+  return v
+end
+
+local function HeldCost(opts, id, pile, n)
+  return opts.heldFree and 0 or HeldValue(opts, id, pile, n)
 end
 
 -- of need, how much held stock to use: only units selling for no more than buying one costs
@@ -209,9 +229,10 @@ local function HeldUse(opts, id, need)
   local _, atAH = V.Worth(id, pile)
   local low = math.min(n, pile - atAH)
   local use = 0
-  if low > 0 and V.HeldCost(id, pile, low) <= buy * low + 1e-6 then use = low end
+  if low > 0 and HeldValue(opts, id, pile, low) <= buy * low + 1e-6 then use = low end
   if use == low and n > low
-    and V.HeldCost(id, pile, n) - V.HeldCost(id, pile, low) <= buy * (n - low) + 1e-6 then
+    and HeldValue(opts, id, pile, n) - HeldValue(opts, id, pile, low)
+      <= buy * (n - low) + 1e-6 then
     use = n
   end
   return use
@@ -392,9 +413,21 @@ local function Cost(steps, opts)
     worth[id] = (value + used * (BuyPrice(id) or 0)) / n
     plan.outputs[id] = o
   end
+  local byId = {}
+  for _, m in ipairs(plan.mats) do byId[m.id] = m end
   for _, st in ipairs(steps) do
     local rec, cost = st.c.rec, 0
-    for _, m in ipairs(rec.mats) do cost = cost + m[2] * st.crafts * unit[m[1]] end
+    -- own: the step's share of held mats, at what they'd sell for after the AH cut; saved:
+    -- what buying those units would cost more
+    st.own, st.saved = 0, 0
+    for _, mat in ipairs(rec.mats) do
+      local q, m = mat[2] * st.crafts, byId[mat[1]]
+      cost = cost + q * unit[mat[1]]
+      if m.held > 0 then
+        st.own = st.own + q * m.heldCost / m.need
+        if m.price then st.saved = st.saved + q * (m.held * m.price - m.heldCost) / m.need end
+      end
+    end
     st.mats = cost
     local out = rec.out and R.Made(rec) * st.crafts or 0
     st.value = rec.out and (opts.resale and out * worth[rec.out]
@@ -753,11 +786,18 @@ local function Stretch(plan, st, c, a, b)
     if p <= 0 then return nil end
     n = n + 1 / p
   end
-  local cost = 0
+  local cost, own, saved, byId = 0, 0, 0, {}
+  for _, m in ipairs(plan.mats or {}) do byId[m.id] = m end
   for _, m in ipairs(c.rec.mats) do
     local u = plan.unit and plan.unit[m[1]] or BuyPrice(m[1])
     if not u then return nil end
-    cost = cost + u * m[2] * n
+    local q, pm = m[2] * n, plan.unit and plan.unit[m[1]] and byId[m[1]]
+    cost = cost + u * q
+    -- held units at the plan's share, as Cost does for its steps
+    if pm and pm.held > 0 then
+      own = own + q * pm.heldCost / pm.need
+      if pm.price then saved = saved + q * (pm.held * pm.price - pm.heldCost) / pm.need end
+    end
   end
   local paid = false
   for _, o in ipairs(plan.steps) do paid = paid or (o ~= st and o.c == c) end
@@ -771,29 +811,34 @@ local function Stretch(plan, st, c, a, b)
     had = math.max(had, 0)
     cost = cost - (OutValue(out, had + n * R.Made(c.rec)) - OutValue(out, had))
   end
-  return cost, n
+  return cost, n, own, saved
 end
 
 -- other recipes for step st's stretch, cheapest first (up to max): each priced for what it
 -- would make there, not the plan's guess, and only until it turns green (the green tail is
--- many crafts a point); the rest of the stretch at the step's own rate.
+-- many crafts a point), from where it's learnt; the rest of the stretch at the step's own
+-- rate.
 -- -> { { c, from, to, n (its crafts there), delta (money vs the step), crafts (extra vs the
---   step) } }
+--   step), own, saved (held mats in its own crafts, as Cost's steps) } }
 function Route.Alternatives(plan, st, max)
   local base, baseN = Stretch(plan, st, st.c, st.from, st.to)
   if not (base and plan.cands) then return {} end
   local span = st.to - st.from
   local out = {}
   for _, c in ipairs(plan.cands) do
-    if c ~= st.c and c.learn <= st.from and c.grey > st.from then
+    -- one learnt partway through the step takes over from there (Heavy Shot at 75 in a
+    -- pinned 67-105 step)
+    local from = math.max(st.from, c.learn)
+    if c ~= st.c and from < st.to and c.grey > from then
       local green = math.floor((c.yellow + c.grey) / 2)
-      local e = math.min(st.to, c.grey, math.max(green, st.from + 1))
-      local cost, n = Stretch(plan, st, c, st.from, e)
+      local e = math.min(st.to, c.grey, math.max(green, from + 1))
+      local cost, n, own, saved = Stretch(plan, st, c, from, e)
       if cost then
-        local rest = (st.to - e) / span
+        local rest = (span - (e - from)) / span
         local delta = cost + base * rest - base
         local extra = n + baseN * rest - baseN
-        out[#out + 1] = { c = c, from = st.from, to = e, delta = delta, crafts = extra, n = n,
+        out[#out + 1] = { c = c, from = from, to = e, delta = delta, crafts = extra, n = n,
+          own = own, saved = saved,
           rank = delta + extra * CraftEffort(st.from) }
       end
     end
@@ -804,12 +849,15 @@ function Route.Alternatives(plan, st, max)
 end
 
 ------------------------------------------------------------------------------ From held
--- What the materials he holds can level, no target: one craft at a time from his rank, the
--- recipe giving the most points per copper (held mats at their price, so the scarce ones are
--- rationed; less what the craft makes is worth), as long as held mats pay at least half of
--- it (vendor mats aside). Held mats are free in the costs; bought ones and learning are not.
--- Known, trainer and held-pattern recipes only (trainer ones not confirmed with
--- opts.unverified); up to opts.to if given.
+-- What the materials he holds can level: one craft at a time from his rank, the recipe giving
+-- the cheapest point (held mats at what they'd sell for, so the scarce ones are rationed;
+-- bought ones at their price; his time as the route counts it; less what the craft makes is
+-- worth), as long as held mats pay at least half of it (vendor mats aside), and only while
+-- that point costs no more than the route's at that rank (opts.against, else planned here):
+-- with mats free and time at 1c a rank it ground 58 Rough Dynamite for 14 points (1 in 14
+-- near grey, 45c a craft) where the route levelled for less. Known, trainer and held-pattern
+-- recipes only
+-- (trainer ones not confirmed with opts.unverified); up to opts.to if given.
 -- What crafts make joins the held stock (Light Leather made goes into the kits after it) and
 -- is worth what it sells for. An intermediate a recipe here uses may be made from bought
 -- mats: Light Leather from scraps nets ~8c a point where a kit from held Light Leather costs
@@ -817,12 +865,28 @@ end
 -- -> a plan as Route.Plan's (held = true; outputs: what is made and left over, sold; no
 --   alternatives or pin)
 local HELD_MAX_CRAFTS = 400
--- copper a craft costs in time, per skill rank: a cheap craft near grey (Light Leather at 8c,
--- 1 in 4 at 39) loses to an orange one (a kit, 67c) once 1 / chance crafts cost more
-local HELD_EFFORT_PER_RANK = 1
+
+-- what the route costs a point at rank k, time included: that level's recipe, its learning
+-- spread over the step; nil where it doesn't reach
+local function RateAt(plan, k)
+  for _, st in ipairs(plan.steps) do
+    if k >= st.from and k < st.to then
+      local p = Points(st.c, k)
+      if p <= 0 or not st.mats then return nil end
+      local money = st.crafts > 0 and (st.mats + (st.setup or 0) - (st.value or 0)) / st.crafts
+        or 0
+      return (money + TimeCost(k)) / p + (st.fee or 0) / (st.to - st.from)
+    end
+  end
+end
 
 function Route.FromHeld(prof, rank, opts)
   opts = opts or {}
+  local against = opts.against
+  if against == nil and opts.to then
+    against = Route.Plan(prof, rank, opts.to, { resale = true, unverified = opts.unverified,
+      max = opts.max, others = opts.others })
+  end
   R.ResetCache()
   wipe(memo)
   local skipped = { unverified = 0, noSource = 0 }
@@ -843,26 +907,35 @@ function Route.FromHeld(prof, rank, opts)
   for _, c in ipairs(cands) do
     for _, m in ipairs(c.rec.mats) do usedHere[m[1]] = true end
   end
-  -- one craft now: its weighted cost (at least 1) and bought part, or nil when held mats
-  -- don't pay for it and it makes nothing used here
-  local function Craft(c)
-    local held, buy, any = 0, 0, false
+  local made = {}
+  -- what n more of out bring, beside those made already
+  local function Worth(out, n)
+    local had = made[out] or 0
+    return OutValue(out, had + n) - OutValue(out, had)
+  end
+  local learnt = {}
+  -- one craft at rank at: what its point costs, or nil when held mats pay less than half of
+  -- it (by buy price) and it makes nothing used here
+  local function Craft(c, at, pts)
+    local share, value, buy, any = 0, 0, 0, false
     for _, m in ipairs(c.rec.mats) do
       local id, n = m[1], m[2]
       local p = Price(id)
       if Left(id) >= n then
-        held, any = held + n * (p or 0) + 1, true
+        share, any = share + n * (p or 0), true
+        value = value + HeldValue(opts, id, Left(id), n)
       elseif not p then
         return nil
       else
         buy = buy + n * p
-        if Vendor(id) then held = held + n * p end
+        if Vendor(id) then share = share + n * p end
       end
     end
     local out = c.rec.out
-    if (not any or buy > held) and not (out and usedHere[out]) then return nil end
-    local worth = out and OutValue(out, R.Made(c.rec)) or 0
-    return math.max(1, held + buy - worth), buy
+    if (not any or buy > share) and not (out and usedHere[out]) then return nil end
+    local worth = out and Worth(out, R.Made(c.rec)) or 0
+    local fee = learnt[c] and 0 or c.fee / math.max(1, c.grey - at)
+    return (value + buy + TimeCost(at) - worth) / pts + fee
   end
   local byRec = {}
   for _, c in ipairs(cands) do byRec[c.rec.id] = c end
@@ -881,22 +954,24 @@ function Route.FromHeld(prof, rank, opts)
     return tc, cat
   end
   local k, steps, last = rank, {}, nil
-  local learnt, mats, use, made = {}, {}, {}, {}
+  local mats, use = {}, {}
   local complete = true
   local function Take(c, at, tool)
-    local buy = 0
+    local spent, worth = 0, 0
     for _, m in ipairs(c.rec.mats) do
       local id, n = m[1], m[2]
       use[id] = (use[id] or 0) + n
       if Left(id) >= n then
+        spent = spent + HeldValue(opts, id, Left(id), n)
         left[id] = left[id] - n
       else
-        buy = buy + n * (Price(id) or 0)
+        spent = spent + n * (Price(id) or 0)
       end
     end
     local out = c.rec.out
     if out then
       local n = R.Made(c.rec)
+      worth = Worth(out, n)
       left[out] = Left(out) + n
       made[out] = (made[out] or 0) + n
     end
@@ -907,33 +982,34 @@ function Route.FromHeld(prof, rank, opts)
       learnt[c] = learnt[c] or at
       steps[#steps + 1] = last
     end
-    last.crafts, last.mats, last.pts = last.crafts + 1, last.mats + buy, last.pts + pts
+    last.crafts, last.mats, last.pts = last.crafts + 1, last.mats + spent, last.pts + pts
+    last.value = last.value + worth
     k = k + pts
     last.to = math.floor(k)
   end
   for _ = 1, HELD_MAX_CRAFTS do
     if opts.to and k >= opts.to then break end
-    local best, bestScore, bestTool
+    local best, bestCost, bestTool
     local at = math.floor(k)
     for _, c in ipairs(cands) do
       local pts = Points(c, at)
       local tool = pts > 0 and ToolFirst(c, at)
       if pts > 0 and tool ~= false then
-        local w = Craft(c)
-        local score = w and pts / (w + HELD_EFFORT_PER_RANK * at)
-        if score and (not bestScore or score > bestScore) then
-          best, bestScore, bestTool = c, score, tool
+        local cost = Craft(c, at, pts)
+        if cost and (not bestCost or cost < bestCost) then
+          best, bestCost, bestTool = c, cost, tool
         end
       end
     end
-    if not best then break end
+    local rate = best and against and RateAt(against, at)
+    if not best or (rate and bestCost > rate) then break end
     if bestTool then
       local tc, cat = ToolFirst(best, at)
       tooled[cat] = true
       Take(tc, at, C.ToolName(cat))
       last = nil
       at = math.floor(k)
-      if Points(best, at) <= 0 or not Craft(best) then at = nil end
+      if Points(best, at) <= 0 or not Craft(best, at, Points(best, at)) then at = nil end
     end
     if at then Take(best, at) end
   end
@@ -943,7 +1019,7 @@ function Route.FromHeld(prof, rank, opts)
   plan.to = plan.reach
   for _, st in ipairs(steps) do
     st.to = math.max(st.to, st.from)
-    st.net = st.mats + st.fee
+    st.net = st.mats + st.fee - st.value
     plan.learn, plan.crafts = plan.learn + st.fee, plan.crafts + st.crafts
   end
   for id, need in pairs(use) do
@@ -952,8 +1028,9 @@ function Route.FromHeld(prof, rank, opts)
     local buy = math.max(0, need - held - (made[id] or 0))
     local p = Price(id)
     local m = { id = id, need = need, held = held, buy = buy, price = p,
-      vendor = Vendor(id), heldCost = 0, cost = buy * (p or 0) }
+      vendor = Vendor(id), heldCost = HeldValue(opts, id, h, held), cost = buy * (p or 0) }
     plan.buy = plan.buy + m.cost
+    plan.heldValue = plan.heldValue + m.heldCost
     mats[#mats + 1] = m
   end
   plan.mats = mats
@@ -971,7 +1048,7 @@ function Route.FromHeld(prof, rank, opts)
     end
   end
   plan.resale = true
-  plan.gross = plan.buy + plan.learn
+  plan.gross = plan.buy + plan.heldValue + plan.learn
   plan.net = plan.gross - plan.recoup
   local max = opts.max or select(2, C.Rank(prof))
   for _, cap in ipairs(Stops(max, plan.reach)) do
@@ -985,6 +1062,89 @@ function Route.FromHeld(prof, rank, opts)
     plan.stops[#plan.stops + 1] = { at = cap, unlocks = unlocks }
   end
   return plan
+end
+
+------------------------------------------------------------------------------ Other routes
+-- Every other profession on the account that crafts (his others, each alt's as its last
+-- login saw it) planned to its cap, a slice at a time (Route.OthersStep, run while nothing
+-- else plans): held mats one of them needs are worth what it would pay for them, not what
+-- they'd sell for (Route.Reserved -> opts.others). Kept OTHERS_KEEP s: needs move slowly
+-- and a pass is several plans.
+local OTHERS_KEEP = 900
+local NO_RECIPES = { Herbalism = true, Skinning = true, Fishing = true }
+local others = { routes = {}, version = 0 }
+
+local function OtherJobs()
+  local out = {}
+  for key, ch in pairs(R.Chars()) do
+    for prof, p in pairs(type(ch) == "table" and type(ch.profs) == "table" and ch.profs or {}) do
+      if not NO_RECIPES[prof] and p.rank and p.max and p.rank < p.max then
+        out[#out + 1] = { key = key, name = ch.name or key, prof = prof, rank = p.rank,
+          max = p.max }
+      end
+    end
+  end
+  table.sort(out, function(a, b)
+    if a.key ~= b.key then return a.key < b.key end
+    return a.prof < b.prof
+  end)
+  return out
+end
+
+function Route.OthersReady()
+  return others.at and GetTime() - others.at < OTHERS_KEEP or false
+end
+function Route.OthersVersion() return others.version end
+-- the next Route.OthersStep starts a new pass (the last one's routes kept meanwhile)
+function Route.OthersReset() others.at, others.queue = nil, nil end
+
+-- one slice of a pass -> true when done (or kept from the last one)
+function Route.OthersStep()
+  local o = others
+  if Route.OthersReady() then return true end
+  if not o.queue then o.queue, o.next, o.found = OtherJobs(), 1, {} end
+  local j = o.queue[o.next]
+  if not j then
+    o.routes, o.at, o.version, o.queue = o.found, GetTime(), o.version + 1, nil
+    return true
+  end
+  j.run = j.run or Route.Start(j.prof, j.rank, j.max,
+    { resale = true, unverified = true, max = j.max })
+  if R.AsViewer(j.key, j.run.Step) then
+    local plan = j.run.plan
+    if j.run.err then geterrorhandler()(j.run.err) end
+    if plan and plan.reach > j.rank then
+      local mats = {}
+      for _, m in ipairs(plan.mats) do
+        if m.need > 0 then mats[m.id] = m.need end
+      end
+      o.found[#o.found + 1] = { key = j.key, name = j.name, prof = j.prof, from = j.rank,
+        to = plan.reach, mats = mats }
+    end
+    o.next = o.next + 1
+  end
+  return false
+end
+
+-- held-mat needs of every other route but who's prof -> { [id] = { n, uses = { route, n } } },
+-- route: { key, name, prof, from, to }; nil before the first pass
+function Route.Reserved(who, prof)
+  if not others.at then return nil end
+  local out = {}
+  for _, r in ipairs(others.routes) do
+    if not (r.key == who and r.prof == prof) then
+      for id, n in pairs(r.mats) do
+        local e = out[id]
+        if not e then
+          e = { n = 0, uses = {} }
+          out[id] = e
+        end
+        e.n = e.n + n
+        e.uses[#e.uses + 1] = { route = r, n = n }
+      end
+    end
+  end
+  return out
 end
 
 -- the route into the queue: each step's expected crafts, rounded up

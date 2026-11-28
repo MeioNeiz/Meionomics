@@ -71,6 +71,15 @@ local function Register()
     .. "routes and verdicts count mats on your other characters (mail them over). Off: only "
     .. "this character's. The Queue tab's menu leaves out single alts (/meio craft alts).",
     function() if M.CraftUI then M.CraftUI.AltsChanged() end end)
+  local function From() return CraftState().useFrom end
+  for _, f in ipairs({ { "BANK", "bank", "Use bank mats", "your bank" },
+    { "MAIL", "mail", "Use mailbox mats", "your mailbox" },
+    { "GUILD", "guild", "Use guild bank", "the guild bank" } }) do
+    Toggle("FROM_" .. f[1], From, f[2], nil, f[3], "The shopping list, routes and verdicts "
+      .. "count mats in " .. f[4] .. ". Off: they're left out, and bought or crafted "
+      .. "instead (/meio craft " .. f[2] .. " on||off).",
+      function() if M.CraftUI then M.CraftUI.AltsChanged() end end)
+  end
 
   Header("Worth window", "What every item is worth, per character and place. /meio worth "
     .. "opens it anywhere.")
@@ -78,10 +87,13 @@ local function Register()
     "Open at the bank", "The Worth window opens on its Bank tab beside your bank, and "
     .. "closes with it (/meio worth bank on||off).")
 
-  Header("Merchants", "Buttons under a vendor's window, shown only when they have work.")
+  Header("Merchants", "Buttons under a vendor's or trainer's window, shown only when they "
+    .. "have work.")
   Toggle("MERCHANT_BUTTONS", db, "merchantButtons", nil, "Merchant buttons", "Buy queue mats "
-    .. "(what the craft queue still needs from this vendor) and Sell junk (greys, and items a "
-    .. "vendor pays most for, never gear). Nothing is bought or sold without a click.")
+    .. "(what the craft queue still needs from this vendor), Sell junk (greys, and items a "
+    .. "vendor pays most for, never gear) and Train queue recipes (what the queue hasn't "
+    .. "learnt that this trainer teaches now). Nothing is bought, sold or trained without a "
+    .. "click.")
 
   Header("Auction house", "Scans, Sell tab prices and price history while the AH is open.")
   Toggle("AUTO_SCAN", db, "autoScan", nil, "AH scan on opening", "Scan every listing when you "

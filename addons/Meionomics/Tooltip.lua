@@ -128,7 +128,11 @@ end
 
 -- by any character: alts craft for each other
 local function Known(rec) return rec.known and next(rec.known) ~= nil end
-local function NotKnown(rec) return Known(rec) and "" or C("dim", " (not known)") end
+-- " (learnable now)", " (known by Alt)", " (not known)"; "" when known here
+local function NotKnown(rec)
+  local state = M.Craft.KnownState(rec)
+  return state and (C("dim", " (") .. state .. C("dim", ")")) or ""
+end
 
 -- in its difficulty colour at your rank, like the profession window
 local function RecName(rec)
@@ -586,7 +590,7 @@ local function WritRows(itemID, full)
   if not (rec and rows) then return nil end
   local h = rec.out and M.Craft.Have(rec.out)
   local mine = h and (h.bags + h.bank + h.mail) or 0
-  local state = R.KnownHere(rec) and C("good", "known") or C("bad", "not known")
+  local state = M.Craft.KnownState(rec, nil, C("bad", "not known")) or C("good", "known")
   table.insert(rows, 1, { kind = "head", left = "Writ wants " .. (rec.name or want),
     right = C("dim", (rec.prof or "?") .. " ") .. state })
   if mine > 0 then

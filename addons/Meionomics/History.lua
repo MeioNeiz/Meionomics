@@ -1029,6 +1029,15 @@ function H.ShowSell(itemID, window, sell)
   H.Show(itemID, window, true, sell)
 end
 
+-- a row picked in a list beside the AH (our Meionomics tab): item link, itemID or variant key
+function H.Pick(item, window)
+  local id = A.Key(item)
+  if not id or M.db.history == false then return end
+  if closedByUser and id == shownID then return end
+  closedByUser = false
+  H.Show(id, window, true)
+end
+
 -- TSM: a base item string ("i:2589"), its window (nil = results gone, tab switched) and the
 -- selected auction's full item string (patch 16), which keeps a random suffix
 local function OnSelect(itemString, frame, full)
